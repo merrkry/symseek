@@ -13,35 +13,14 @@ fn main() {
 
     match utils::search_file(target) {
         Ok(FileLocation::Cwd(path)) => {
-            let resolved = utils::resolve_symlink(&path).expect("Failed to resolve symlink");
-
-            println!(
-                "{}",
-                path_clean::clean(path).to_str().expect("Invalid path")
-            );
-            for (idx, path) in resolved.iter().enumerate() {
-                let leading_char = match idx {
-                    _ if idx == resolved.len() - 1 => '└',
-                    _ => '├',
-                };
-
-                println!("{}─{}", leading_char, path.to_str().unwrap_or("0"));
-            }
+            utils::print_trace(path);
         }
         Ok(FileLocation::Path(paths)) => {
-            println!("Found {} matches in PATH", paths.len());
+            println!("Found {} matches in PATH\n", paths.len());
 
             for path in paths {
-                println!("\n{}", path.to_str().expect("Invalid path"));
-                let resolved = utils::resolve_symlink(&path).expect("Failed to resolve symlink");
-                for (idx, path) in resolved.iter().enumerate() {
-                    let leading_char = match idx {
-                        _ if idx == resolved.len() - 1 => '└',
-                        _ => '├',
-                    };
-
-                    println!("{}─{}", leading_char, path.to_str().unwrap_or("0"));
-                }
+                utils::print_trace(path);
+                println!("");
             }
         }
         Err(e) => {

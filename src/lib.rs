@@ -1,5 +1,8 @@
 pub mod utils {
-    use std::{env, io, path};
+    use std::{
+        env, io,
+        path::{self, PathBuf},
+    };
 
     pub enum FileLocation {
         Cwd(path::PathBuf),
@@ -83,5 +86,23 @@ pub mod utils {
         }
 
         Ok(resolved_paths)
+    }
+
+    pub fn print_trace(path: PathBuf) {
+        println!(
+            "{}",
+            path_clean::clean(&path).to_str().expect("Invalid path")
+        );
+
+        let resolved = resolve_symlink(&path).expect("Failed to resolve symlink");
+
+        for (idx, path) in resolved.iter().enumerate() {
+            let leading_char = match idx {
+                _ if idx == resolved.len() - 1 => '└',
+                _ => '├',
+            };
+
+            println!("{}─{}", leading_char, path.to_str().expect("Invalid path"));
+        }
     }
 }
