@@ -15,7 +15,10 @@ fn main() {
         Ok(FileLocation::Cwd(path)) => {
             let resolved = utils::resolve_symlink(&path).expect("Failed to resolve symlink");
 
-            println!("{}", path.to_str().expect("Invalid path"));
+            println!(
+                "{}",
+                path_clean::clean(path).to_str().expect("Invalid path")
+            );
             for (idx, path) in resolved.iter().enumerate() {
                 let leading_char = match idx {
                     _ if idx == resolved.len() - 1 => '└',
