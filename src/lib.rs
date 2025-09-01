@@ -23,7 +23,7 @@ pub mod utils {
         if name.contains(path::MAIN_SEPARATOR) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("File name '{}' not found in current directory", name),
+                format!("File name '{name}' not found in current directory"),
             ));
         }
 
@@ -46,7 +46,7 @@ pub mod utils {
 
         Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("File '{}' not found in current directory and PATH", name),
+            format!("File '{name}' not found in current directory and PATH"),
         ))
     }
 
@@ -88,13 +88,13 @@ pub mod utils {
         Ok(resolved_paths)
     }
 
-    pub fn print_trace(path: PathBuf) {
+    pub fn print_trace(path: &PathBuf) {
         println!(
             "{}",
-            path_clean::clean(&path).to_str().expect("Invalid path")
+            path_clean::clean(path).to_str().expect("Invalid path")
         );
 
-        let resolved = resolve_symlink(&path).expect("Failed to resolve symlink");
+        let resolved = resolve_symlink(path).expect("Failed to resolve symlink");
 
         for (idx, path) in resolved.iter().enumerate() {
             let leading_char = match idx {
