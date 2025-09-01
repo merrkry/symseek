@@ -2,6 +2,11 @@
 name = "symseek"
 version = "0.1.0"
 edition = "2024"
+description = "A simple utility to trace symlinks recursively"
+repository = "https://github.com/merrkry/symseek"
+license = "GPL-3.0-or-later"
+keywords = ["cli"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 path-clean = "1.0.1"
