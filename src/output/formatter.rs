@@ -44,7 +44,7 @@ fn link_type_info(link_type: &LinkType) -> (&'static str, String) {
         },
         LinkType::Terminal(file_kind) => match file_kind {
             FileKind::Binary => ("", " [binary]".to_string()),
-            FileKind::Text => ("", " [text]".to_string()),
+            FileKind::Text => ("", " [plaintext]".to_string()),
         },
     }
 }
@@ -58,7 +58,8 @@ pub fn print_separator() {
 }
 
 fn format_path(path: &Path) -> String {
-    path_clean::clean(path)
-        .to_str()
-        .map_or_else(|| "<invalid UTF-8>".to_string(), std::string::ToString::to_string)
+    path_clean::clean(path).to_str().map_or_else(
+        || "<invalid UTF-8>".to_string(),
+        std::string::ToString::to_string,
+    )
 }

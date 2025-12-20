@@ -7,9 +7,8 @@ use std::sync::LazyLock;
 
 const MAX_FILE_SIZE: u64 = 1_048_576; // 1 MiB
 
-static NIX_STORE_PATH_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"/nix/store/[a-z0-9]+-[^/\s]+(?:/[^/\s]+)*").unwrap()
-});
+static NIX_STORE_PATH_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/nix/store/[a-z0-9]+-[^/\s]+(?:/[^/\s]+)*").unwrap());
 
 #[derive(Debug, Clone)]
 pub enum FileType {
@@ -68,7 +67,10 @@ pub fn detect_file_type(path: &Path) -> Result<FileType> {
     if buffer.starts_with(b"#!") {
         trace!("Shebang detected in: {}", path.display());
 
-        let newline_pos = buffer.iter().position(|&b| b == b'\n').unwrap_or(buffer.len());
+        let newline_pos = buffer
+            .iter()
+            .position(|&b| b == b'\n')
+            .unwrap_or(buffer.len());
         let shebang = &buffer[2..newline_pos];
 
         if let Ok(shebang_str) = std::str::from_utf8(shebang) {
@@ -119,13 +121,6 @@ pub trait WrapperDetector {
 ///
 /// Removes leading dots (`.`) and trailing suffixes (`-wrapped`, `-unwrapped`)
 /// used by NixOS wrappers.
-///
-/// # Examples
-///
-/// ```ignore
-/// assert_eq!(normalize_program_name(".code-wrapped"), "code");
-/// assert_eq!(normalize_program_name("chromium-unwrapped"), "chromium");
-/// ```
 fn normalize_program_name(name: &str) -> &str {
     let mut result = name;
 
@@ -194,7 +189,10 @@ impl WrapperDetector for NixStorePathDetector {
             if let Some(matched) = caps.get(0) {
                 let mut candidate_str = matched.as_str();
                 // Remove trailing quotes and special characters
-                while candidate_str.ends_with('"') || candidate_str.ends_with('\'') || candidate_str.ends_with('$') {
+                while candidate_str.ends_with('"')
+                    || candidate_str.ends_with('\'')
+                    || candidate_str.ends_with('$')
+                {
                     candidate_str = &candidate_str[..candidate_str.len() - 1];
                 }
 

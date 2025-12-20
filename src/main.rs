@@ -1,4 +1,4 @@
-use symseek::cli::{args, Cli};
+use symseek::cli::{Cli, args};
 
 fn main() {
     // Parse args early to check verbose flag before logger init

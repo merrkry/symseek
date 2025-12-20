@@ -96,7 +96,7 @@ fn search_in_path(name: &str) -> Result<Vec<path::PathBuf>> {
                 return Err(SymseekError::Io {
                     context: format!("Failed to check if {} exists", full_path.display()),
                     source: e,
-                })
+                });
             }
         }
     }

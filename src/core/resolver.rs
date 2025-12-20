@@ -1,5 +1,5 @@
 use crate::core::detector::{self, FileType, NixStorePathDetector, WrapperDetector};
-use crate::core::types::{LinkType, ScriptType, SymlinkChain, WrapperKind};
+use crate::core::types::{FileKind, LinkType, ScriptType, SymlinkChain, WrapperKind};
 use crate::error::{Result, SymseekError};
 use log::{debug, trace};
 use std::collections::HashSet;
@@ -45,7 +45,11 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
         // Try symlink first
         let is_symlink = match current.read_link() {
             Ok(target) => {
-                debug!("Found symlink: {} -> {}", current.display(), target.display());
+                debug!(
+                    "Found symlink: {} -> {}",
+                    current.display(),
+                    target.display()
+                );
                 let resolved = resolve_target(&current, &target);
                 current.clone_from(&resolved);
                 true
@@ -60,7 +64,7 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
                 return Err(SymseekError::SymlinkResolution {
                     path: current.clone(),
                     reason: e.to_string(),
-                })
+                });
             }
         };
 
@@ -73,9 +77,12 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
         let wrapper_result = match file_type {
             FileType::ShellScript => {
                 let detector = NixStorePathDetector;
-                detector
-                    .detect(&current)?
-                    .map(|target| (target, LinkType::Wrapper(WrapperKind::Text(ScriptType::Shell))))
+                detector.detect(&current)?.map(|target| {
+                    (
+                        target,
+                        LinkType::Wrapper(WrapperKind::Text(ScriptType::Shell)),
+                    )
+                })
             }
             FileType::ElfBinary => {
                 let detector = NixStorePathDetector;
@@ -103,13 +110,24 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
             continue;
         }
 
-        // Terminal node - add it to the chain and mark as final
+        // Terminal node - determine what type of file it is
         trace!("Reached terminal node: {}", current.display());
-        chain.add_link(current.clone(), true, LinkType::Symlink);
+        let file_type = detector::detect_file_type(&current)?;
+
+        // Convert file type to the appropriate link type for the terminal node
+        let terminal_link_type = match file_type {
+            FileType::ElfBinary | FileType::OtherBinary => LinkType::Terminal(FileKind::Binary),
+            _ => LinkType::Terminal(FileKind::Text), // Symlinks, scripts, and other files are "text" from user perspective
+        };
+
+        chain.add_link(current.clone(), true, terminal_link_type);
         break;
     }
 
-    debug!("Resolution complete: {} link(s) in chain", chain.links.len());
+    debug!(
+        "Resolution complete: {} link(s) in chain",
+        chain.links.len()
+    );
     Ok(chain)
 }
 

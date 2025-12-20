@@ -2,7 +2,7 @@ pub mod args;
 
 use crate::core::{resolver, search, types::FileLocation};
 use crate::error::Result;
-use crate::output::formatter;
+use crate::output::{OutputFormat, formatter, json};
 use log::debug;
 
 /// Main CLI application struct.
@@ -44,21 +44,41 @@ impl Cli {
     pub fn run(&self) -> Result<()> {
         debug!("Searching for target: {}", &self.args.target);
         let location = search::find_file(&self.args.target)?;
+        let format = self.args.output_format();
 
         match location {
             FileLocation::CurrentDirectory(path) => {
                 debug!("Found in current directory: {}", path.display());
                 let chain = resolver::resolve(&path)?;
-                formatter::print_tree(&chain);
+
+                match format {
+                    OutputFormat::Json => json::print_json_single(&chain)?,
+                    OutputFormat::Tree => formatter::print_tree(&chain),
+                }
             }
             FileLocation::PathEnvironment(paths) => {
                 debug!("Found {} matches in PATH", paths.len());
-                formatter::print_header(paths.len());
-                for (idx, path) in paths.iter().enumerate() {
-                    debug!("Resolving PATH match {}/{}: {}", idx + 1, paths.len(), path.display());
-                    let chain = resolver::resolve(path)?;
-                    formatter::print_tree(&chain);
-                    formatter::print_separator();
+
+                match format {
+                    OutputFormat::Json => {
+                        let chains: Result<Vec<_>> =
+                            paths.iter().map(|p| resolver::resolve(p)).collect();
+                        json::print_json_multiple(&chains?)?;
+                    }
+                    OutputFormat::Tree => {
+                        formatter::print_header(paths.len());
+                        for (idx, path) in paths.iter().enumerate() {
+                            debug!(
+                                "Resolving PATH match {}/{}: {}",
+                                idx + 1,
+                                paths.len(),
+                                path.display()
+                            );
+                            let chain = resolver::resolve(path)?;
+                            formatter::print_tree(&chain);
+                            formatter::print_separator();
+                        }
+                    }
                 }
             }
         }

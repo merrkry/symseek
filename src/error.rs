@@ -30,6 +30,9 @@ pub enum SymseekError {
 
     #[error("Failed to parse wrapper at {path:?}: {reason}")]
     WrapperParsing { path: PathBuf, reason: String },
+
+    #[error("JSON serialization failed: {0}")]
+    JsonSerialization(#[from] serde_json::Error),
 }
 
 pub type Result<T> = std::result::Result<T, SymseekError>;

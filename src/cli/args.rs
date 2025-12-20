@@ -1,3 +1,4 @@
+use crate::output::OutputFormat;
 use clap::Parser;
 
 #[derive(Parser, Debug)]
@@ -10,6 +11,10 @@ pub struct Args {
     /// Enable verbose logging
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
 }
 
 impl Args {
@@ -17,5 +22,15 @@ impl Args {
     #[must_use]
     pub fn parse() -> Self {
         <Self as Parser>::parse()
+    }
+
+    /// Get the output format based on flags.
+    #[must_use]
+    pub const fn output_format(&self) -> OutputFormat {
+        if self.json {
+            OutputFormat::Json
+        } else {
+            OutputFormat::Tree
+        }
     }
 }
