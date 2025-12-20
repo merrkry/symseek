@@ -391,4 +391,136 @@ mod tests {
         let _other_binary = FileType::OtherBinary;
         let _other_text = FileType::OtherText;
     }
+
+    // Filesystem-dependent tests (require tempfile)
+    #[cfg(test)]
+    mod fs_tests {
+        use super::*;
+        use assert_fs::TempDir;
+        use assert_fs::prelude::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        fn create_executable_script(
+            dir: &TempDir,
+            name: &str,
+            content: &str,
+        ) -> std::path::PathBuf {
+            let path = dir.child(name);
+            path.write_str(content).unwrap();
+            let mut perms = fs::metadata(path.path()).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(path.path(), perms).unwrap();
+            path.to_path_buf()
+        }
+
+        #[test]
+        fn test_detect_elf_binary() {
+            let temp = TempDir::new().unwrap();
+            let elf_magic = [0x7f, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00];
+            let file = temp.child("binary");
+            file.write_binary(&elf_magic).unwrap();
+
+            let file_type = detect_file_type(file.path()).unwrap();
+            assert!(matches!(file_type, FileType::ElfBinary));
+        }
+
+        #[test]
+        fn test_detect_shell_script() {
+            let temp = TempDir::new().unwrap();
+            let script = "#!/bin/bash\necho 'hello'\n";
+            let path = create_executable_script(&temp, "script.sh", script);
+
+            let file_type = detect_file_type(&path).unwrap();
+            assert!(matches!(file_type, FileType::ShellScript));
+        }
+
+        #[test]
+        fn test_detect_shell_script_variants() {
+            let temp = TempDir::new().unwrap();
+            let variants = vec![
+                "#!/bin/sh",
+                "#!/usr/bin/bash",
+                "#!/usr/bin/env bash",
+                "#!/bin/zsh",
+            ];
+
+            for shebang in variants {
+                let content = format!("{}\necho test", shebang);
+                let path = create_executable_script(&temp, "test", &content);
+                let detected = detect_file_type(&path).unwrap();
+                assert!(matches!(detected, FileType::ShellScript));
+            }
+        }
+
+        #[test]
+        fn test_detect_python_script() {
+            let temp = TempDir::new().unwrap();
+            let script = "#!/usr/bin/python3\nprint('hello')\n";
+            let path = create_executable_script(&temp, "script.py", script);
+
+            let file_type = detect_file_type(&path).unwrap();
+            assert!(matches!(file_type, FileType::PythonScript));
+        }
+
+        #[test]
+        fn test_detect_perl_script() {
+            let temp = TempDir::new().unwrap();
+            let script = "#!/usr/bin/perl\nprint \"hello\\n\";\n";
+            let path = create_executable_script(&temp, "script.pl", script);
+
+            let file_type = detect_file_type(&path).unwrap();
+            assert!(matches!(file_type, FileType::PerlScript));
+        }
+
+        #[test]
+        fn test_detect_other_script() {
+            let temp = TempDir::new().unwrap();
+            let script = "#!/usr/bin/ruby\nputs 'hello'\n";
+            let path = create_executable_script(&temp, "script.rb", script);
+
+            let file_type = detect_file_type(&path).unwrap();
+            assert!(matches!(file_type, FileType::OtherScript));
+        }
+
+        #[test]
+        fn test_detect_plain_text() {
+            let temp = TempDir::new().unwrap();
+            let content = "This is plain text\nwith multiple lines\n";
+            let file = temp.child("readme.txt");
+            file.write_str(content).unwrap();
+
+            let file_type = detect_file_type(file.path()).unwrap();
+            assert!(matches!(file_type, FileType::OtherText));
+        }
+
+        #[test]
+        fn test_detect_other_binary() {
+            let temp = TempDir::new().unwrap();
+            let binary_data = &[0x89, 0x50, 0x4E, 0x47]; // PNG magic
+            let file = temp.child("image.png");
+            file.write_binary(binary_data).unwrap();
+
+            let file_type = detect_file_type(file.path()).unwrap();
+            assert!(matches!(file_type, FileType::OtherBinary));
+        }
+
+        #[test]
+        fn test_detect_symlink() {
+            let temp = TempDir::new().unwrap();
+            let target = temp.child("target");
+            target.write_str("content").unwrap();
+            let link = temp.child("link");
+            link.symlink_to_file(target.path()).unwrap();
+
+            let file_type = detect_file_type(link.path()).unwrap();
+            assert!(matches!(file_type, FileType::Symlink));
+        }
+
+        #[test]
+        fn test_detect_nonexistent_file() {
+            let path = std::path::PathBuf::from("/nonexistent/file");
+            let result = detect_file_type(&path);
+            assert!(result.is_err());
+        }
+    }
 }
