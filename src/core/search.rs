@@ -3,17 +3,19 @@ use crate::error::{Result, SymseekError};
 use std::{env, path};
 
 pub fn find_file(name: &str) -> Result<FileLocation> {
-    if let Some(path) = search_in_cwd(name)? {
-        return Ok(FileLocation::CurrentDirectory(path));
-    }
-
+    // If input contains path separators, handle as a path
     if name.contains(path::MAIN_SEPARATOR) {
+        if let Some(path) = search_in_cwd(name)? {
+            return Ok(FileLocation::CurrentDirectory(path));
+        }
+
         return Err(SymseekError::NotFound {
             name: name.to_string(),
             searched_locations: vec!["current directory".to_string()],
         });
     }
 
+    // If input is just a binary name, search only in PATH
     let paths = search_in_path(name)?;
     if !paths.is_empty() {
         return Ok(FileLocation::PathEnvironment(paths));
@@ -21,7 +23,7 @@ pub fn find_file(name: &str) -> Result<FileLocation> {
 
     Err(SymseekError::NotFound {
         name: name.to_string(),
-        searched_locations: vec!["current directory".to_string(), "PATH".to_string()],
+        searched_locations: vec!["PATH".to_string()],
     })
 }
 
