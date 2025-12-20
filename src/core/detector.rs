@@ -5,17 +5,8 @@ use regex::Regex;
 use std::fs;
 use std::path::Path;
 
-// Compile regexes once at startup instead of on every call
-static WRAPPED_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^/nix/store/[^/]+/bin/\.[^/]+-wrapped$").unwrap()
-});
-
-static BIN_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^/nix/store/[^/]+/bin/[^/]+$").unwrap()
-});
-
-static SHELL_EXEC_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?m)^\s*exec\s+(?:(?:-[a-z]\s+\S+|\-\-)\s+)*["']([^"']+)["']"#).unwrap()
+static NIX_STORE_PATH_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"/nix/store/[a-z0-9]+-[^/\s]+(?:/[^/\s]+)*").unwrap()
 });
 
 #[derive(Debug, Clone)]
@@ -33,7 +24,6 @@ pub enum FileType {
 pub fn detect_file_type(path: &Path) -> Result<FileType> {
     trace!("detect_file_type called for: {}", path.display());
 
-    // Check if symlink via metadata (don't follow links)
     let metadata = fs::symlink_metadata(path).map_err(|e| SymseekError::Io {
         context: format!("Failed to read metadata for {}", path.display()),
         source: e,
@@ -44,7 +34,6 @@ pub fn detect_file_type(path: &Path) -> Result<FileType> {
         return Ok(FileType::Symlink);
     }
 
-    // Read first 512 bytes to detect file type
     let mut buffer = vec![0u8; 512];
     let bytes_read = fs::File::open(path)
         .and_then(|mut f| {
@@ -59,27 +48,22 @@ pub fn detect_file_type(path: &Path) -> Result<FileType> {
     buffer.truncate(bytes_read);
     trace!("Read {} bytes from {}", bytes_read, path.display());
 
-    // Check for ELF magic number (0x7F 'E' 'L' 'F')
-    if buffer.len() >= 4 && &buffer[0..4] == b"\x7FELF" {
+    if buffer.len() >= 4 && &buffer[0..4] == [0x7f, b'E', b'L', b'F'] {
         trace!("Detected as ELF binary: {}", path.display());
         return Ok(FileType::ElfBinary);
     }
 
-    // Check for shebang and parse interpreter
     if buffer.starts_with(b"#!") {
         trace!("Shebang detected in: {}", path.display());
 
-        // Find the end of the shebang line
         let newline_pos = buffer.iter().position(|&b| b == b'\n').unwrap_or(buffer.len());
         let shebang = &buffer[2..newline_pos];
 
-        // Convert to string, ignore if not valid UTF-8
         if let Ok(shebang_str) = std::str::from_utf8(shebang) {
             let shebang_lower = shebang_str.to_lowercase();
             debug!("Shebang: {}", shebang_str.trim());
 
-            // Detect interpreter type
-            if shebang_lower.contains("bash") || shebang_lower.contains("/sh") {
+            if shebang_lower.contains("bash") || shebang_lower.contains("sh") {
                 trace!("Detected as shell script: {}", path.display());
                 return Ok(FileType::ShellScript);
             } else if shebang_lower.contains("python") {
@@ -94,7 +78,6 @@ pub fn detect_file_type(path: &Path) -> Result<FileType> {
         }
     }
 
-    // Try to decode as UTF-8 to distinguish text vs binary
     match std::str::from_utf8(&buffer) {
         Ok(_) => {
             trace!("Detected as other text: {}", path.display());
@@ -107,123 +90,132 @@ pub fn detect_file_type(path: &Path) -> Result<FileType> {
     }
 }
 
-pub fn extract_shell_wrapper_target(path: &Path) -> Result<Option<String>> {
-    trace!("extract_shell_wrapper_target called for: {}", path.display());
-
-    let content = fs::read_to_string(path).map_err(|e| SymseekError::Io {
-        context: format!("Failed to read shell script {}", path.display()),
-        source: e,
-    })?;
-
-    // Pattern matches: exec "/path/to/binary" or exec '/path/to/binary'
-    // Also handles: exec -a name "/path" or exec -- "/path"
-    // The pattern is: exec (with optional flags) followed by a quoted path
-    if let Some(caps) = SHELL_EXEC_REGEX.captures(&content)
-        && let Some(matched) = caps.get(1)
-    {
-        let target_path = matched.as_str();
-        debug!("Found exec target in shell script: {}", target_path);
-
-        // If path is relative, resolve it relative to script's parent directory
-        let resolved_path = if Path::new(target_path).is_absolute() {
-            target_path.to_string()
-        } else {
-            let parent = path.parent().unwrap_or_else(|| Path::new("/"));
-            let joined = parent.join(target_path);
-            joined.to_string_lossy().to_string()
-        };
-
-        trace!("Resolved wrapper target: {}", resolved_path);
-        return Ok(Some(resolved_path));
-    }
-
-    trace!("No exec pattern found in shell script: {}", path.display());
-    Ok(None)
+pub trait WrapperDetector {
+    fn detect(&self, path: &Path) -> Result<Option<String>>;
+    fn name(&self) -> &'static str;
 }
 
-pub fn extract_binary_wrapper_target(path: &Path) -> Result<Option<String>> {
-    trace!("extract_binary_wrapper_target called for: {}", path.display());
+fn normalize_program_name(name: &str) -> &str {
+    let mut result = name;
 
-    let path_str = path.to_string_lossy();
-
-    // Only process if path contains /nix/store (optimization)
-    if !path_str.contains("/nix/store") {
-        trace!("Not a /nix/store binary, skipping wrapper extraction");
-        return Ok(None);
+    if let Some(stripped) = result.strip_prefix('.') {
+        result = stripped;
     }
 
-    // Check file size - skip very large files to avoid excessive memory usage
-    // makeCWrapper embeds the path early in the binary, so we don't need to read the entire file
-    const MAX_SIZE: u64 = 1 * 1024 * 1024; // 1MB limit
-    let metadata = fs::metadata(path).map_err(|e| SymseekError::Io {
-        context: format!("Failed to read metadata for {}", path.display()),
-        source: e,
-    })?;
-
-    if metadata.len() > MAX_SIZE {
-        trace!(
-            "Binary too large ({} bytes > {} MB), skipping wrapper extraction",
-            metadata.len(),
-            MAX_SIZE / (1024 * 1024)
-        );
-        return Ok(None);
+    if result.ends_with("unwrapped") {
+        result = &result[..result.len() - 10];
+    } else if result.ends_with("wrapped") {
+        result = &result[..result.len() - 8];
     }
 
-    trace!("Reading binary to extract embedded strings: {}", path.display());
+    result
+}
 
-    let content = fs::read(path).map_err(|e| SymseekError::Io {
-        context: format!("Failed to read binary {}", path.display()),
-        source: e,
-    })?;
+fn programs_match(current: &Path, candidate: &Path) -> bool {
+    let current_name = current
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(normalize_program_name)
+        .unwrap_or("");
 
-    // Extract null-terminated strings from binary
-    let mut strings = Vec::new();
+    let candidate_name = candidate
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(normalize_program_name)
+        .unwrap_or("");
+
+    !current_name.is_empty() && current_name == candidate_name
+}
+
+pub struct NixStorePathDetector;
+
+impl WrapperDetector for NixStorePathDetector {
+    fn detect(&self, path: &Path) -> Result<Option<String>> {
+        let path_str = path.to_string_lossy();
+        trace!("NixStorePathDetector: checking {}", path_str);
+
+        if !path_str.contains("nix") {
+            trace!("NixStorePathDetector: not a nix path, skipping");
+            return Ok(None);
+        }
+
+        const MAX_SIZE: u64 = 1 * 1024 * 1024;
+        let metadata = fs::metadata(path).map_err(|e| SymseekError::Io {
+            context: format!("Failed to read metadata for {}", path.display()),
+            source: e,
+        })?;
+
+        if metadata.len() > MAX_SIZE {
+            trace!("NixStorePathDetector: file too large");
+            return Ok(None);
+        }
+
+        let content_str = if let Ok(text) = fs::read_to_string(path) {
+            text
+        } else {
+            let bytes = fs::read(path).map_err(|e| SymseekError::Io {
+                context: format!("Failed to read file {}", path.display()),
+                source: e,
+            })?;
+
+            extract_strings_from_binary(&bytes)
+        };
+
+        for caps in NIX_STORE_PATH_REGEX.captures_iter(&content_str) {
+            if let Some(matched) = caps.get(0) {
+                let mut candidate_str = matched.as_str();
+                // Remove trailing quotes and special characters
+                while candidate_str.ends_with('"') || candidate_str.ends_with('\'') || candidate_str.ends_with('$') {
+                    candidate_str = &candidate_str[..candidate_str.len() - 1];
+                }
+
+                let candidate_path = Path::new(candidate_str);
+                trace!("NixStorePathDetector: found path in content: {}", candidate_str);
+
+                let names_match = programs_match(path, candidate_path);
+                let exists = candidate_path.exists();
+                let not_same = candidate_path != path;
+
+                trace!("  names_match={}, exists={}, not_same={}", names_match, exists, not_same);
+
+                if names_match && exists && not_same {
+                    debug!(
+                        "NixStorePathDetector: found matching path: {}",
+                        candidate_str
+                    );
+                    return Ok(Some(candidate_str.to_string()));
+                }
+            }
+        }
+
+        trace!("NixStorePathDetector: no target path");
+        Ok(None)
+    }
+
+    fn name(&self) -> &'static str {
+        "NixStorePathDetector"
+    }
+}
+
+fn extract_strings_from_binary(bytes: &[u8]) -> String {
+    let mut result = String::new();
     let mut current = Vec::new();
 
-    for &byte in &content {
+    for &byte in bytes {
         if byte == 0 {
             if !current.is_empty() {
                 if let Ok(s) = String::from_utf8(current.clone()) {
-                    strings.push(s);
+                    result.push_str(&s);
+                    result.push('\n');
                 }
                 current.clear();
             }
         } else if (32..=126).contains(&byte) {
-            // Printable ASCII
             current.push(byte);
         } else {
             current.clear();
         }
     }
 
-    trace!("Extracted {} strings from binary", strings.len());
-
-    // Look for pattern: /nix/store/...-wrapped or /nix/store/.../bin/...
-    for s in strings {
-        if (WRAPPED_REGEX.is_match(&s) || BIN_REGEX.is_match(&s)) && s != path_str {
-            let candidate = Path::new(&s);
-            // Verify it exists
-            if candidate.exists() {
-                debug!("Found binary wrapper target: {}", s);
-                return Ok(Some(s));
-            }
-            trace!("Candidate path does not exist: {}", s);
-        }
-    }
-
-    trace!("No wrapper target found in binary");
-    Ok(None)
-}
-
-pub fn extract_script_wrapper_target(
-    _path: &Path,
-    _script_type: crate::core::types::ScriptType,
-) -> Result<Option<String>> {
-    // For now, only shell scripts are implemented
-    // Python, Perl, and other script types are reserved for future work
-    // Return None for non-shell scripts
-
-    // This is a stub that will be expanded in future versions
-    // to support Python virtual environments, Perl wrappers, etc.
-    Ok(None)
+    result
 }

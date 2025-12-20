@@ -1,4 +1,4 @@
-use crate::core::detector::{self, FileType};
+use crate::core::detector::{self, FileType, NixStorePathDetector, WrapperDetector};
 use crate::core::types::{LinkType, ScriptType, SymlinkChain, WrapperKind};
 use crate::error::{Result, SymseekError};
 use log::{debug, trace};
@@ -57,16 +57,18 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
         let file_type = detector::detect_file_type(&current)?;
         debug!("File type detected: {:?}", file_type);
 
-        // Try to extract wrapper based on file type
+        // Use NixStorePathDetector for shell scripts and binaries
         let wrapper_result = match file_type {
             FileType::ShellScript => {
-                trace!("Attempting shell wrapper extraction");
-                detector::extract_shell_wrapper_target(&current)?
+                let detector = NixStorePathDetector;
+                detector
+                    .detect(&current)?
                     .map(|target| (target, LinkType::Wrapper(WrapperKind::Text(ScriptType::Shell))))
             }
             FileType::ElfBinary => {
-                trace!("Attempting binary wrapper extraction");
-                detector::extract_binary_wrapper_target(&current)?
+                let detector = NixStorePathDetector;
+                detector
+                    .detect(&current)?
                     .map(|target| (target, LinkType::Wrapper(WrapperKind::Binary)))
             }
             // Python, Perl, and other script types: future work
