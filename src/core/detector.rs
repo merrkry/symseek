@@ -1,8 +1,22 @@
 use crate::error::{Result, SymseekError};
 use log::{debug, trace};
+use once_cell::sync::Lazy;
 use regex::Regex;
 use std::fs;
 use std::path::Path;
+
+// Compile regexes once at startup instead of on every call
+static WRAPPED_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^/nix/store/[^/]+/bin/\.[^/]+-wrapped$").unwrap()
+});
+
+static BIN_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^/nix/store/[^/]+/bin/[^/]+$").unwrap()
+});
+
+static SHELL_EXEC_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?m)^\s*exec\s+(?:(?:-[a-z]\s+\S+|\-\-)\s+)*["']([^"']+)["']"#).unwrap()
+});
 
 #[derive(Debug, Clone)]
 pub enum FileType {
@@ -104,9 +118,7 @@ pub fn extract_shell_wrapper_target(path: &Path) -> Result<Option<String>> {
     // Pattern matches: exec "/path/to/binary" or exec '/path/to/binary'
     // Also handles: exec -a name "/path" or exec -- "/path"
     // The pattern is: exec (with optional flags) followed by a quoted path
-    let re = Regex::new(r#"(?m)^\s*exec\s+(?:(?:-[a-z]\s+\S+|\-\-)\s+)*["']([^"']+)["']"#).unwrap();
-
-    if let Some(caps) = re.captures(&content)
+    if let Some(caps) = SHELL_EXEC_REGEX.captures(&content)
         && let Some(matched) = caps.get(1)
     {
         let target_path = matched.as_str();
@@ -140,6 +152,23 @@ pub fn extract_binary_wrapper_target(path: &Path) -> Result<Option<String>> {
         return Ok(None);
     }
 
+    // Check file size - skip very large files to avoid excessive memory usage
+    // makeCWrapper embeds the path early in the binary, so we don't need to read the entire file
+    const MAX_SIZE: u64 = 1 * 1024 * 1024; // 1MB limit
+    let metadata = fs::metadata(path).map_err(|e| SymseekError::Io {
+        context: format!("Failed to read metadata for {}", path.display()),
+        source: e,
+    })?;
+
+    if metadata.len() > MAX_SIZE {
+        trace!(
+            "Binary too large ({} bytes > {} MB), skipping wrapper extraction",
+            metadata.len(),
+            MAX_SIZE / (1024 * 1024)
+        );
+        return Ok(None);
+    }
+
     trace!("Reading binary to extract embedded strings: {}", path.display());
 
     let content = fs::read(path).map_err(|e| SymseekError::Io {
@@ -170,11 +199,8 @@ pub fn extract_binary_wrapper_target(path: &Path) -> Result<Option<String>> {
     trace!("Extracted {} strings from binary", strings.len());
 
     // Look for pattern: /nix/store/...-wrapped or /nix/store/.../bin/...
-    let wrapped_re = Regex::new(r"^/nix/store/[^/]+/bin/\.[^/]+-wrapped$").unwrap();
-    let bin_re = Regex::new(r"^/nix/store/[^/]+/bin/[^/]+$").unwrap();
-
     for s in strings {
-        if (wrapped_re.is_match(&s) || bin_re.is_match(&s)) && s != path_str {
+        if (WRAPPED_REGEX.is_match(&s) || BIN_REGEX.is_match(&s)) && s != path_str {
             let candidate = Path::new(&s);
             // Verify it exists
             if candidate.exists() {
