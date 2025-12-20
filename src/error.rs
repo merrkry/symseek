@@ -24,6 +24,12 @@ pub enum SymseekError {
 
     #[error("Invalid path encoding: {path:?}")]
     PathEncoding { path: PathBuf },
+
+    #[error("Cycle detected in chain at {path:?}")]
+    CycleDetected { path: PathBuf },
+
+    #[error("Failed to parse wrapper at {path:?}: {reason}")]
+    WrapperParsing { path: PathBuf, reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, SymseekError>;

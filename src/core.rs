@@ -1,3 +1,4 @@
+pub mod detector;
 pub mod resolver;
 pub mod search;
 pub mod types;
