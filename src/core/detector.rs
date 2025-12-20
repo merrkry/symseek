@@ -5,8 +5,17 @@ use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
 
+// File type detection constants
 const MAX_FILE_SIZE: u64 = 1_048_576; // 1 MiB
+const BUFFER_SIZE: usize = 512;
+const ELF_MAGIC: &[u8] = &[0x7f, b'E', b'L', b'F'];
+const SHEBANG_PREFIX: &[u8] = b"#!";
+const PRINTABLE_ASCII_MIN: u8 = 32;
+const PRINTABLE_ASCII_MAX: u8 = 126;
+const WRAPPED_SUFFIX: &str = "-wrapped";
+const UNWRAPPED_SUFFIX: &str = "-unwrapped";
 
+// Nix store path detection regex
 static NIX_STORE_PATH_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"/nix/store/[a-z0-9]+-[^/\s]+(?:/[^/\s]+)*").unwrap());
 
@@ -45,7 +54,7 @@ pub fn detect_file_type(path: &Path) -> Result<FileType> {
         return Ok(FileType::Symlink);
     }
 
-    let mut buffer = vec![0u8; 512];
+    let mut buffer = vec![0u8; BUFFER_SIZE];
     let bytes_read = fs::File::open(path)
         .and_then(|mut f| {
             use std::io::Read;
@@ -59,19 +68,19 @@ pub fn detect_file_type(path: &Path) -> Result<FileType> {
     buffer.truncate(bytes_read);
     trace!("Read {} bytes from {}", bytes_read, path.display());
 
-    if buffer.len() >= 4 && buffer[0..4] == [0x7f, b'E', b'L', b'F'] {
+    if buffer.len() >= ELF_MAGIC.len() && buffer[0..ELF_MAGIC.len()] == *ELF_MAGIC {
         trace!("Detected as ELF binary: {}", path.display());
         return Ok(FileType::ElfBinary);
     }
 
-    if buffer.starts_with(b"#!") {
+    if buffer.starts_with(SHEBANG_PREFIX) {
         trace!("Shebang detected in: {}", path.display());
 
         let newline_pos = buffer
             .iter()
             .position(|&b| b == b'\n')
             .unwrap_or(buffer.len());
-        let shebang = &buffer[2..newline_pos];
+        let shebang = &buffer[SHEBANG_PREFIX.len()..newline_pos];
 
         if let Ok(shebang_str) = std::str::from_utf8(shebang) {
             let shebang_lower = shebang_str.to_lowercase();
@@ -120,7 +129,10 @@ pub trait WrapperDetector {
 /// Normalize a program name by stripping common prefixes and suffixes.
 ///
 /// Removes leading dots (`.`) and trailing suffixes (`-wrapped`, `-unwrapped`)
-/// used by NixOS wrappers.
+/// used by NixOS wrappers. For example:
+/// - `.nvim-wrapped` → `nvim`
+/// - `python-unwrapped` → `python`
+/// - `gcc` → `gcc`
 fn normalize_program_name(name: &str) -> &str {
     let mut result = name;
 
@@ -128,16 +140,21 @@ fn normalize_program_name(name: &str) -> &str {
         result = stripped;
     }
 
-    if result.ends_with("unwrapped") {
-        result = &result[..result.len() - 10];
-    } else if result.ends_with("wrapped") {
-        result = &result[..result.len() - 8];
+    if result.ends_with(UNWRAPPED_SUFFIX) {
+        result = &result[..result.len() - UNWRAPPED_SUFFIX.len()];
+    } else if result.ends_with(WRAPPED_SUFFIX) {
+        result = &result[..result.len() - WRAPPED_SUFFIX.len()];
     }
 
     result
 }
 
 /// Check if two paths have the same normalized program name.
+///
+/// Returns `true` if both paths refer to the same program after normalizing
+/// wrapped/unwrapped variants and dot prefixes. For example:
+/// - `/usr/bin/nvim` and `/nix/store/xxx/bin/nvim-wrapped` match
+/// - `/usr/bin/nvim` and `/usr/bin/python` do not match
 fn programs_match(current: &Path, candidate: &Path) -> bool {
     let current_name = current
         .file_name()
@@ -221,6 +238,18 @@ impl WrapperDetector for NixStorePathDetector {
     }
 }
 
+/// Extract null-terminated strings from binary data.
+///
+/// Scans through binary data and extracts sequences of printable ASCII characters
+/// (32-126) separated by null bytes or non-printable bytes. Useful for finding
+/// embedded file paths and strings in binary files.
+///
+/// # Example
+/// ```ignore
+/// let binary = b"path\0data\0";
+/// let result = extract_strings_from_binary(binary);
+/// // result contains "path\ndata\n"
+/// ```
 fn extract_strings_from_binary(bytes: &[u8]) -> String {
     let mut result = String::new();
     let mut current = Vec::new();
@@ -234,7 +263,7 @@ fn extract_strings_from_binary(bytes: &[u8]) -> String {
                 }
                 current.clear();
             }
-        } else if (32..=126).contains(&byte) {
+        } else if (PRINTABLE_ASCII_MIN..=PRINTABLE_ASCII_MAX).contains(&byte) {
             current.push(byte);
         } else {
             current.clear();
