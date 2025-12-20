@@ -3,8 +3,21 @@ use crate::error::{Result, SymseekError};
 use log::{debug, trace};
 use std::{env, path};
 
+/// Find a file by name in the current directory or PATH.
+///
+/// If the name contains a path separator, it's treated as a path and searched
+/// in the current directory. Otherwise, it's treated as a binary name and
+/// searched in the PATH environment variable.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The file is not found in the searched locations
+/// - The current directory cannot be determined
+/// - The PATH environment variable is not set
+/// - File existence cannot be checked
 pub fn find_file(name: &str) -> Result<FileLocation> {
-    debug!("find_file called with: {}", name);
+    debug!("find_file called with: {name}");
 
     // If input contains path separators, handle as a path
     if name.contains(path::MAIN_SEPARATOR) {
@@ -66,7 +79,7 @@ fn search_in_path(name: &str) -> Result<Vec<path::PathBuf>> {
         message: "PATH environment variable not found".to_string(),
     })?;
 
-    debug!("Searching PATH for: {}", name);
+    debug!("Searching PATH for: {name}");
     let mut found_paths = Vec::new();
 
     for path in env::split_paths(&paths) {

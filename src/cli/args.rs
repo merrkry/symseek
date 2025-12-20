@@ -13,7 +13,9 @@ pub struct Args {
 }
 
 impl Args {
+    /// Parse command-line arguments.
+    #[must_use]
     pub fn parse() -> Self {
-        <Args as Parser>::parse()
+        <Self as Parser>::parse()
     }
 }

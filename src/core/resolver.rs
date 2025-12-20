@@ -5,6 +5,18 @@ use log::{debug, trace};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+/// Resolve a path by following symlinks and detecting wrappers.
+///
+/// Starting from the given path, follows all symlinks and detects wrapper
+/// scripts/binaries, building a chain of all links found.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The path is not absolute
+/// - A symlink cannot be read
+/// - A cycle is detected in symlinks
+/// - File metadata or content cannot be read
 pub fn resolve(path: &Path) -> Result<SymlinkChain> {
     debug!("resolve called for: {}", path.display());
 
@@ -21,7 +33,7 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
 
     loop {
         iteration += 1;
-        trace!("Iteration {}: processing {}", iteration, current.display());
+        trace!("Iteration {iteration}: processing {}", current.display());
 
         // Cycle detection
         if visited.contains(&current) {
@@ -33,7 +45,7 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
         // Try symlink first
         let is_symlink = match current.read_link() {
             Ok(target) => {
-                debug!("Found symlink: {} -> {:?}", current.display(), target);
+                debug!("Found symlink: {} -> {}", current.display(), target.display());
                 let resolved = resolve_target(&current, &target);
                 current.clone_from(&resolved);
                 true
@@ -55,7 +67,7 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
         // Detect file type and extract wrapper
         trace!("Detecting file type for: {}", current.display());
         let file_type = detector::detect_file_type(&current)?;
-        debug!("File type detected: {:?}", file_type);
+        debug!("File type detected: {file_type:?}");
 
         // Use NixStorePathDetector for shell scripts and binaries
         let wrapper_result = match file_type {
@@ -78,7 +90,7 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
 
         if let Some((target, link_type)) = wrapper_result {
             // Found a wrapper, add current path with wrapper type
-            debug!("Found wrapper, following to: {}", target);
+            debug!("Found wrapper, following to: {target}");
             chain.add_link(current.clone(), false, link_type);
             // Add the wrapper target and continue
             current = PathBuf::from(target);

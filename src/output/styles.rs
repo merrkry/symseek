@@ -6,7 +6,7 @@ pub struct TreeChars {
 
 impl Default for TreeChars {
     fn default() -> Self {
-        TreeChars {
+        Self {
             branch: "├",
             last: "└",
             connector: "─",

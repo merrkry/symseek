@@ -1,5 +1,4 @@
 use crate::core::types::{FileKind, LinkType, ScriptType, SymlinkChain, WrapperKind};
-use crate::error::Result;
 use crate::output::styles::TreeChars;
 use std::path::Path;
 
@@ -50,12 +49,8 @@ fn link_type_info(link_type: &LinkType) -> (&'static str, String) {
     }
 }
 
-pub fn print_json(_chain: &SymlinkChain) -> Result<()> {
-    todo!("JSON output not implemented yet")
-}
-
 pub fn print_header(count: usize) {
-    println!("Found {} matches in PATH\n", count);
+    println!("Found {count} matches in PATH\n");
 }
 
 pub fn print_separator() {
@@ -65,6 +60,5 @@ pub fn print_separator() {
 fn format_path(path: &Path) -> String {
     path_clean::clean(path)
         .to_str()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "<invalid UTF-8>".to_string())
+        .map_or_else(|| "<invalid UTF-8>".to_string(), std::string::ToString::to_string)
 }

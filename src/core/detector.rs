@@ -1,11 +1,13 @@
 use crate::error::{Result, SymseekError};
 use log::{debug, trace};
-use once_cell::sync::Lazy;
 use regex::Regex;
 use std::fs;
 use std::path::Path;
+use std::sync::LazyLock;
 
-static NIX_STORE_PATH_REGEX: Lazy<Regex> = Lazy::new(|| {
+const MAX_FILE_SIZE: u64 = 1_048_576; // 1 MiB
+
+static NIX_STORE_PATH_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"/nix/store/[a-z0-9]+-[^/\s]+(?:/[^/\s]+)*").unwrap()
 });
 
@@ -21,6 +23,16 @@ pub enum FileType {
     OtherText,
 }
 
+/// Detect the type of a file by examining its content.
+///
+/// Checks file metadata and content to determine if it's a symlink, shell script,
+/// Python script, Perl script, ELF binary, or other text/binary file.
+///
+/// Uses the ELF magic number for binary detection and shebangs for script detection.
+///
+/// # Errors
+///
+/// Returns an error if file metadata or content cannot be read.
 pub fn detect_file_type(path: &Path) -> Result<FileType> {
     trace!("detect_file_type called for: {}", path.display());
 
@@ -48,7 +60,7 @@ pub fn detect_file_type(path: &Path) -> Result<FileType> {
     buffer.truncate(bytes_read);
     trace!("Read {} bytes from {}", bytes_read, path.display());
 
-    if buffer.len() >= 4 && &buffer[0..4] == [0x7f, b'E', b'L', b'F'] {
+    if buffer.len() >= 4 && buffer[0..4] == [0x7f, b'E', b'L', b'F'] {
         trace!("Detected as ELF binary: {}", path.display());
         return Ok(FileType::ElfBinary);
     }
@@ -78,23 +90,42 @@ pub fn detect_file_type(path: &Path) -> Result<FileType> {
         }
     }
 
-    match std::str::from_utf8(&buffer) {
-        Ok(_) => {
-            trace!("Detected as other text: {}", path.display());
-            Ok(FileType::OtherText)
-        }
-        Err(_) => {
-            trace!("Detected as other binary: {}", path.display());
-            Ok(FileType::OtherBinary)
-        }
+    if std::str::from_utf8(&buffer).is_ok() {
+        trace!("Detected as other text: {}", path.display());
+        Ok(FileType::OtherText)
+    } else {
+        trace!("Detected as other binary: {}", path.display());
+        Ok(FileType::OtherBinary)
     }
 }
 
+/// Trait for wrapper detection strategies.
+///
+/// Implementations can detect different types of wrappers by examining file
+/// content and determining if a file wraps another executable.
 pub trait WrapperDetector {
+    /// Detect if the given path is a wrapper for another executable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or analyzed.
     fn detect(&self, path: &Path) -> Result<Option<String>>;
+
+    /// Return the name of this detector for logging purposes.
     fn name(&self) -> &'static str;
 }
 
+/// Normalize a program name by stripping common prefixes and suffixes.
+///
+/// Removes leading dots (`.`) and trailing suffixes (`-wrapped`, `-unwrapped`)
+/// used by NixOS wrappers.
+///
+/// # Examples
+///
+/// ```ignore
+/// assert_eq!(normalize_program_name(".code-wrapped"), "code");
+/// assert_eq!(normalize_program_name("chromium-unwrapped"), "chromium");
+/// ```
 fn normalize_program_name(name: &str) -> &str {
     let mut result = name;
 
@@ -111,18 +142,17 @@ fn normalize_program_name(name: &str) -> &str {
     result
 }
 
+/// Check if two paths have the same normalized program name.
 fn programs_match(current: &Path, candidate: &Path) -> bool {
     let current_name = current
         .file_name()
         .and_then(|n| n.to_str())
-        .map(normalize_program_name)
-        .unwrap_or("");
+        .map_or("", normalize_program_name);
 
     let candidate_name = candidate
         .file_name()
         .and_then(|n| n.to_str())
-        .map(normalize_program_name)
-        .unwrap_or("");
+        .map_or("", normalize_program_name);
 
     !current_name.is_empty() && current_name == candidate_name
 }
@@ -132,20 +162,19 @@ pub struct NixStorePathDetector;
 impl WrapperDetector for NixStorePathDetector {
     fn detect(&self, path: &Path) -> Result<Option<String>> {
         let path_str = path.to_string_lossy();
-        trace!("NixStorePathDetector: checking {}", path_str);
+        trace!("NixStorePathDetector: checking {path_str}");
 
         if !path_str.contains("nix") {
             trace!("NixStorePathDetector: not a nix path, skipping");
             return Ok(None);
         }
 
-        const MAX_SIZE: u64 = 1 * 1024 * 1024;
         let metadata = fs::metadata(path).map_err(|e| SymseekError::Io {
             context: format!("Failed to read metadata for {}", path.display()),
             source: e,
         })?;
 
-        if metadata.len() > MAX_SIZE {
+        if metadata.len() > MAX_FILE_SIZE {
             trace!("NixStorePathDetector: file too large");
             return Ok(None);
         }
@@ -170,19 +199,16 @@ impl WrapperDetector for NixStorePathDetector {
                 }
 
                 let candidate_path = Path::new(candidate_str);
-                trace!("NixStorePathDetector: found path in content: {}", candidate_str);
+                trace!("NixStorePathDetector: found path in content: {candidate_str}");
 
                 let names_match = programs_match(path, candidate_path);
                 let exists = candidate_path.exists();
                 let not_same = candidate_path != path;
 
-                trace!("  names_match={}, exists={}, not_same={}", names_match, exists, not_same);
+                trace!("  names_match={names_match}, exists={exists}, not_same={not_same}");
 
                 if names_match && exists && not_same {
-                    debug!(
-                        "NixStorePathDetector: found matching path: {}",
-                        candidate_str
-                    );
+                    debug!("NixStorePathDetector: found matching path: {candidate_str}");
                     return Ok(Some(candidate_str.to_string()));
                 }
             }

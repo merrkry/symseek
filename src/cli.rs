@@ -5,27 +5,44 @@ use crate::error::Result;
 use crate::output::formatter;
 use log::debug;
 
+/// Main CLI application struct.
+///
+/// Handles parsing command-line arguments and running the symlink resolution logic.
 pub struct Cli {
     args: args::Args,
 }
 
+impl Default for Cli {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Cli {
+    /// Create a new CLI instance with parsed command-line arguments.
+    #[must_use]
     pub fn new() -> Self {
-        Cli {
+        Self {
             args: args::Args::parse(),
         }
     }
 
-    pub fn with_args(args: args::Args) -> Self {
-        Cli { args }
+    /// Create a new CLI instance with provided arguments.
+    #[must_use]
+    pub const fn with_args(args: args::Args) -> Self {
+        Self { args }
     }
 
-    pub fn args(&self) -> &args::Args {
-        &self.args
-    }
-
+    /// Run the CLI application.
+    ///
+    /// Searches for the target file/binary and resolves its symlink chain,
+    /// printing the results to stdout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file lookup or symlink resolution fails.
     pub fn run(&self) -> Result<()> {
-        debug!("Searching for target: {}", self.args.target);
+        debug!("Searching for target: {}", &self.args.target);
         let location = search::find_file(&self.args.target)?;
 
         match location {
