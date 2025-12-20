@@ -243,3 +243,152 @@ fn extract_strings_from_binary(bytes: &[u8]) -> String {
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    // normalize_program_name tests
+    #[test]
+    fn test_normalize_program_name_basic() {
+        assert_eq!(normalize_program_name("nvim"), "nvim");
+        assert_eq!(normalize_program_name("python3"), "python3");
+        assert_eq!(normalize_program_name("gcc"), "gcc");
+    }
+
+    #[test]
+    fn test_normalize_program_name_wrapped() {
+        assert_eq!(normalize_program_name("nvim-wrapped"), "nvim");
+        assert_eq!(normalize_program_name("gcc-wrapped"), "gcc");
+        assert_eq!(normalize_program_name("bash-wrapped"), "bash");
+    }
+
+    #[test]
+    fn test_normalize_program_name_unwrapped() {
+        assert_eq!(normalize_program_name("nvim-unwrapped"), "nvim");
+        assert_eq!(normalize_program_name("python-unwrapped"), "python");
+        assert_eq!(normalize_program_name("gcc-unwrapped"), "gcc");
+    }
+
+    #[test]
+    fn test_normalize_program_name_dot_prefix() {
+        assert_eq!(normalize_program_name(".nvim-wrapped"), "nvim");
+        assert_eq!(normalize_program_name(".hidden"), "hidden");
+        assert_eq!(normalize_program_name(".python-unwrapped"), "python");
+    }
+
+    #[test]
+    fn test_normalize_program_name_edge_cases() {
+        assert_eq!(normalize_program_name(""), "");
+        // Note: normalize removes the suffix from the entire name
+        // so "wrapped" only (7 chars) becomes "" after trying to remove 8 chars
+        // The actual behavior here depends on how the code handles string slicing
+    }
+
+    // programs_match tests
+    #[test]
+    fn test_programs_match_exact() {
+        let path1 = PathBuf::from("/usr/bin/nvim");
+        let path2 = PathBuf::from("/nix/store/xxx/bin/nvim");
+        assert!(programs_match(&path1, &path2));
+    }
+
+    #[test]
+    fn test_programs_match_wrapped_variants() {
+        let original = PathBuf::from("/usr/bin/nvim");
+        let wrapped = PathBuf::from("/usr/bin/nvim-wrapped");
+        let unwrapped = PathBuf::from("/nix/store/xxx/bin/nvim-unwrapped");
+
+        assert!(programs_match(&original, &wrapped));
+        assert!(programs_match(&original, &unwrapped));
+        assert!(programs_match(&wrapped, &unwrapped));
+    }
+
+    #[test]
+    fn test_programs_match_different_programs() {
+        let nvim = PathBuf::from("/usr/bin/nvim");
+        let vim = PathBuf::from("/usr/bin/vim");
+        assert!(!programs_match(&nvim, &vim));
+    }
+
+    #[test]
+    fn test_programs_match_dot_prefix() {
+        let normal = PathBuf::from("/usr/bin/nvim");
+        let dotted = PathBuf::from("/usr/bin/.nvim-wrapped");
+        assert!(programs_match(&normal, &dotted));
+    }
+
+    #[test]
+    fn test_programs_match_different_suffixes() {
+        let path1 = PathBuf::from("/usr/bin/vim");
+        let path2 = PathBuf::from("/usr/local/bin/nano");
+        // Different program names should not match
+        assert!(!programs_match(&path1, &path2));
+    }
+
+    // extract_strings_from_binary tests
+    #[test]
+    fn test_extract_strings_simple() {
+        let binary = b"Hello\0World\0";
+        let result = extract_strings_from_binary(binary);
+        assert!(result.contains("Hello"));
+        assert!(result.contains("World"));
+    }
+
+    #[test]
+    fn test_extract_strings_with_nix_paths() {
+        let binary = b"\x00\x01\x02/nix/store/abc123-pkg/bin/exe\0more data\0";
+        let result = extract_strings_from_binary(binary);
+        assert!(result.contains("/nix/store/abc123-pkg/bin/exe"));
+        assert!(result.contains("more data"));
+    }
+
+    #[test]
+    fn test_extract_strings_filters_non_printable() {
+        // Test that non-printable bytes clear the buffer
+        // "Valid\0" gets extracted, but "Other" (without null terminator after)
+        // doesn't get extracted unless followed by null
+        let binary = b"Valid\0\x01\x02\x03Other\0Next\0";
+        let result = extract_strings_from_binary(binary);
+        assert!(result.contains("Valid"));
+        assert!(result.contains("Other"));
+        assert!(result.contains("Next"));
+    }
+
+    #[test]
+    fn test_extract_strings_empty() {
+        let binary = b"";
+        let result = extract_strings_from_binary(binary);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_extract_strings_only_binary() {
+        let binary = &[0x01, 0x02, 0x03, 0x04, 0xff, 0xfe];
+        let result = extract_strings_from_binary(binary);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_extract_strings_multiple_sequences() {
+        let binary = b"first\0second\0third\0";
+        let result = extract_strings_from_binary(binary);
+        assert!(result.contains("first"));
+        assert!(result.contains("second"));
+        assert!(result.contains("third"));
+    }
+
+    // FileType variant construction tests
+    #[test]
+    fn test_file_type_variants() {
+        let _symlink = FileType::Symlink;
+        let _shell = FileType::ShellScript;
+        let _python = FileType::PythonScript;
+        let _perl = FileType::PerlScript;
+        let _other_script = FileType::OtherScript;
+        let _elf = FileType::ElfBinary;
+        let _other_binary = FileType::OtherBinary;
+        let _other_text = FileType::OtherText;
+    }
+}

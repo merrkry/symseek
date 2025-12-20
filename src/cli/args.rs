@@ -34,3 +34,77 @@ impl Args {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_output_format_default() {
+        let args = Args {
+            target: "test".to_string(),
+            verbose: false,
+            json: false,
+        };
+        assert_eq!(args.output_format(), OutputFormat::Tree);
+    }
+
+    #[test]
+    fn test_output_format_json() {
+        let args = Args {
+            target: "test".to_string(),
+            verbose: false,
+            json: true,
+        };
+        assert_eq!(args.output_format(), OutputFormat::Json);
+    }
+
+    #[test]
+    fn test_output_format_with_verbose() {
+        let args = Args {
+            target: "test".to_string(),
+            verbose: true,
+            json: false,
+        };
+        assert_eq!(args.output_format(), OutputFormat::Tree);
+
+        let args_json = Args {
+            target: "test".to_string(),
+            verbose: true,
+            json: true,
+        };
+        assert_eq!(args_json.output_format(), OutputFormat::Json);
+    }
+
+    #[test]
+    fn test_output_format_both_flags() {
+        // Test combinations of verbose and json flags
+        let args_tree_quiet = Args {
+            target: "test".to_string(),
+            verbose: false,
+            json: false,
+        };
+        assert_eq!(args_tree_quiet.output_format(), OutputFormat::Tree);
+
+        let args_tree_verbose = Args {
+            target: "test".to_string(),
+            verbose: true,
+            json: false,
+        };
+        assert_eq!(args_tree_verbose.output_format(), OutputFormat::Tree);
+
+        let args_json_quiet = Args {
+            target: "test".to_string(),
+            verbose: false,
+            json: true,
+        };
+        assert_eq!(args_json_quiet.output_format(), OutputFormat::Json);
+
+        let args_json_verbose = Args {
+            target: "test".to_string(),
+            verbose: true,
+            json: true,
+        };
+        assert_eq!(args_json_verbose.output_format(), OutputFormat::Json);
+    }
+}
