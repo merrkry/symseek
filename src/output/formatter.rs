@@ -30,9 +30,9 @@ pub fn print_tree(chain: &SymlinkChain) {
 
 fn link_type_info(link_type: &LinkType) -> (&'static str, String) {
     match link_type {
-        LinkType::Symlink => ("->", String::new()),
+        LinkType::Symlink => ("", String::new()),
         LinkType::Wrapper(wrapper_kind) => match wrapper_kind {
-            WrapperKind::Binary => ("=>", " [binary wrapper]".to_string()),
+            WrapperKind::Binary => ("", " [binary wrapper]".to_string()),
             WrapperKind::Text(script_type) => {
                 let label = match script_type {
                     ScriptType::Shell => " [sh wrapper]",
@@ -40,12 +40,12 @@ fn link_type_info(link_type: &LinkType) -> (&'static str, String) {
                     ScriptType::Perl => " [pl wrapper]",
                     ScriptType::Unknown => " [script wrapper]",
                 };
-                ("~>", label.to_string())
+                ("", label.to_string())
             }
         },
         LinkType::Terminal(file_kind) => match file_kind {
-            FileKind::Binary => ("--", " [binary]".to_string()),
-            FileKind::Text => ("--", " [text]".to_string()),
+            FileKind::Binary => ("", " [binary]".to_string()),
+            FileKind::Text => ("", " [text]".to_string()),
         },
     }
 }

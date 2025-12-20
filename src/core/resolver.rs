@@ -31,17 +31,17 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
         visited.insert(current.clone());
 
         // Try symlink first
-        match current.read_link() {
+        let is_symlink = match current.read_link() {
             Ok(target) => {
                 debug!("Found symlink: {} -> {:?}", current.display(), target);
                 let resolved = resolve_target(&current, &target);
                 current.clone_from(&resolved);
-                chain.add_link(resolved, false, LinkType::Symlink);
-                continue;
+                true
             }
             Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
                 // Not a symlink - continue to wrapper detection
                 trace!("Not a symlink: {}", current.display());
+                false
             }
             Err(e) => {
                 debug!("Error reading symlink {}: {}", current.display(), e);
@@ -50,7 +50,7 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
                     reason: e.to_string(),
                 })
             }
-        }
+        };
 
         // Detect file type and extract wrapper
         trace!("Detecting file type for: {}", current.display());
@@ -77,18 +77,23 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
         };
 
         if let Some((target, link_type)) = wrapper_result {
-            // Found a wrapper, continue following the chain
+            // Found a wrapper, add current path with wrapper type
             debug!("Found wrapper, following to: {}", target);
-            current = PathBuf::from(target.clone());
-            chain.add_link(PathBuf::from(target), false, link_type);
+            chain.add_link(current.clone(), false, link_type);
+            // Add the wrapper target and continue
+            current = PathBuf::from(target);
             continue;
         }
 
-        // Terminal node - no wrapper found
-        trace!("Reached terminal node: {}", current.display());
-        if let Some(last) = chain.links.last_mut() {
-            last.is_final = true;
+        // No wrapper found - add with appropriate type based on what we found earlier
+        if is_symlink {
+            chain.add_link(current.clone(), false, LinkType::Symlink);
+            continue;
         }
+
+        // Terminal node - add it to the chain and mark as final
+        trace!("Reached terminal node: {}", current.display());
+        chain.add_link(current.clone(), true, LinkType::Symlink);
         break;
     }
 
