@@ -113,31 +113,11 @@ mod tests {
     }
 
     #[test]
-    fn test_link_type_symlink_variant() {
-        let _symlink = LinkType::Symlink;
-    }
-
-    #[test]
-    fn test_link_type_wrapper_variants() {
-        let _wrapper_binary = LinkType::Wrapper(WrapperKind::Binary);
-        let _wrapper_shell = LinkType::Wrapper(WrapperKind::Text(ScriptType::Shell));
-        let _wrapper_python = LinkType::Wrapper(WrapperKind::Text(ScriptType::Python));
-        let _wrapper_perl = LinkType::Wrapper(WrapperKind::Text(ScriptType::Perl));
-        let _wrapper_unknown = LinkType::Wrapper(WrapperKind::Text(ScriptType::Unknown));
-    }
-
-    #[test]
-    fn test_link_type_terminal_variants() {
-        let _terminal_binary = LinkType::Terminal(FileKind::Binary);
-        let _terminal_text = LinkType::Terminal(FileKind::Text);
-    }
-
-    #[test]
     fn test_file_location_current_directory() {
         let loc = FileLocation::CurrentDirectory(PathBuf::from("/cwd/file"));
         match loc {
             FileLocation::CurrentDirectory(path) => assert_eq!(path, PathBuf::from("/cwd/file")),
-            _ => panic!("Wrong variant"),
+            FileLocation::PathEnvironment(_) => panic!("Wrong variant"),
         }
     }
 
@@ -154,22 +134,8 @@ mod tests {
                 assert_eq!(matched_paths.len(), 2);
                 assert_eq!(matched_paths, paths);
             }
-            _ => panic!("Wrong variant"),
+            FileLocation::CurrentDirectory(_) => panic!("Wrong variant"),
         }
-    }
-
-    #[test]
-    fn test_script_type_variants() {
-        let _shell = ScriptType::Shell;
-        let _python = ScriptType::Python;
-        let _perl = ScriptType::Perl;
-        let _unknown = ScriptType::Unknown;
-    }
-
-    #[test]
-    fn test_file_kind_variants() {
-        let _binary = FileKind::Binary;
-        let _text = FileKind::Text;
     }
 
     #[test]
@@ -192,7 +158,7 @@ mod tests {
         for i in 0..5 {
             let is_final = i == 4;
             chain.add_link(
-                PathBuf::from(format!("/link{}", i)),
+                PathBuf::from(format!("/link{i}")),
                 is_final,
                 LinkType::Symlink,
             );

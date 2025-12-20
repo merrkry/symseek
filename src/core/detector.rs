@@ -408,19 +408,6 @@ mod tests {
         assert!(result.contains("third"));
     }
 
-    // FileType variant construction tests
-    #[test]
-    fn test_file_type_variants() {
-        let _symlink = FileType::Symlink;
-        let _shell = FileType::ShellScript;
-        let _python = FileType::PythonScript;
-        let _perl = FileType::PerlScript;
-        let _other_script = FileType::OtherScript;
-        let _elf = FileType::ElfBinary;
-        let _other_binary = FileType::OtherBinary;
-        let _other_text = FileType::OtherText;
-    }
-
     // Filesystem-dependent tests (require tempfile)
     #[cfg(test)]
     mod fs_tests {
@@ -474,7 +461,7 @@ mod tests {
             ];
 
             for shebang in variants {
-                let content = format!("{}\necho test", shebang);
+                let content = format!("{shebang}\necho test");
                 let path = create_executable_script(&temp, "test", &content);
                 let detected = detect_file_type(&path).unwrap();
                 assert!(matches!(detected, FileType::ShellScript));

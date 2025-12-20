@@ -107,9 +107,9 @@ fn search_in_path(name: &str) -> Result<Vec<path::PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assert_fs::prelude::*;
-    use assert_fs::TempDir;
     use crate::core::types::FileLocation;
+    use assert_fs::TempDir;
+    use assert_fs::prelude::*;
     use std::os::unix::fs::PermissionsExt;
 
     fn create_executable(path: &std::path::PathBuf) {
@@ -118,7 +118,6 @@ mod tests {
         perms.set_mode(0o755);
         std::fs::set_permissions(path, perms).unwrap();
     }
-
 
     #[test]
     fn test_find_file_in_path() {
@@ -156,7 +155,7 @@ mod tests {
                 assert_eq!(paths.len(), 1);
                 assert!(paths[0].ends_with("bin2/myexe"));
             }
-            _ => panic!("Expected PathEnvironment"),
+            FileLocation::CurrentDirectory(_) => panic!("Expected PathEnvironment"),
         }
     }
 
@@ -194,7 +193,7 @@ mod tests {
             FileLocation::PathEnvironment(paths) => {
                 assert_eq!(paths.len(), 2);
             }
-            _ => panic!("Expected PathEnvironment"),
+            FileLocation::CurrentDirectory(_) => panic!("Expected PathEnvironment"),
         }
     }
 
@@ -245,10 +244,10 @@ mod tests {
         assert!(result.is_ok());
         match result.unwrap() {
             FileLocation::PathEnvironment(paths) => {
-                assert!(paths.len() > 0);
+                assert!(!paths.is_empty());
                 assert!(paths[0].ends_with("testcmd"));
             }
-            _ => panic!("Expected PathEnvironment for binary name"),
+            FileLocation::CurrentDirectory(_) => panic!("Expected PathEnvironment for binary name"),
         }
     }
 }

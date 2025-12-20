@@ -143,8 +143,8 @@ fn resolve_target(current: &Path, target: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assert_fs::prelude::*;
     use assert_fs::TempDir;
+    use assert_fs::prelude::*;
     use std::os::unix::fs::PermissionsExt;
 
     fn create_executable(dir: &TempDir, name: &str, content: &[u8]) -> PathBuf {
