@@ -104,10 +104,24 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
             continue;
         }
 
-        // No wrapper found - add with appropriate type based on what we found earlier
+        // No wrapper found - add the current path with appropriate type based on file type
         if is_symlink {
-            chain.add_link(current.clone(), false, LinkType::Symlink);
-            continue;
+            // We followed a symlink, add the target with the correct type
+            let link_type = match file_type {
+                FileType::Symlink => LinkType::Symlink,
+                FileType::ElfBinary => LinkType::Terminal(FileKind::Binary),
+                _ => LinkType::Terminal(FileKind::Text),
+            };
+
+            // Mark as final only if it's a terminal node
+            let is_final = file_type != FileType::Symlink;
+            chain.add_link(current.clone(), is_final, link_type);
+
+            // If the target is a symlink, continue following it
+            if file_type == FileType::Symlink {
+                continue;
+            }
+            break; // Reached a terminal node
         }
 
         // Terminal node - determine what type of file it is
@@ -180,10 +194,14 @@ mod tests {
 
         let chain = resolve(link.path()).unwrap();
 
-        assert_eq!(chain.links.len(), 2);
-        assert!(matches!(chain.links[0].link_type, LinkType::Symlink));
-        assert!(!chain.links[0].is_final);
-        assert!(chain.links[1].is_final);
+        // Single symlink pointing to target should produce one link (the terminal)
+        assert_eq!(chain.links.len(), 1);
+        assert!(chain.links[0].is_final);
+        // Target is a text file, so it should be Terminal(Text)
+        assert!(matches!(
+            chain.links[0].link_type,
+            LinkType::Terminal(FileKind::Text)
+        ));
     }
 
     #[test]
@@ -204,11 +222,11 @@ mod tests {
 
         let chain = resolve(link1.path()).unwrap();
 
-        assert_eq!(chain.links.len(), 4);
+        // Symlink chain produces: link2 (symlink), link3 (symlink), target (terminal)
+        assert_eq!(chain.links.len(), 3);
         assert!(matches!(chain.links[0].link_type, LinkType::Symlink));
         assert!(matches!(chain.links[1].link_type, LinkType::Symlink));
-        assert!(matches!(chain.links[2].link_type, LinkType::Symlink));
-        assert!(chain.links[3].is_final);
+        assert!(chain.links[2].is_final);
     }
 
     #[test]
@@ -226,9 +244,10 @@ mod tests {
 
         let chain = resolve(link.path()).unwrap();
 
-        assert_eq!(chain.links.len(), 2);
+        // Resolving a relative symlink produces one link (the terminal)
+        assert_eq!(chain.links.len(), 1);
         // Verify the target was resolved correctly
-        let resolved_target = &chain.links[1].target;
+        let resolved_target = &chain.links[0].target;
         assert!(resolved_target.ends_with("target"));
         assert!(resolved_target.is_absolute());
     }
@@ -315,5 +334,39 @@ mod tests {
 
         let resolved = resolve_target(current, target);
         assert_eq!(resolved, PathBuf::from("/usr/bin/target"));
+    }
+
+    #[test]
+    fn test_resolve_symlink_to_symlink_to_binary() {
+        let temp = TempDir::new().unwrap();
+
+        // Create binary file
+        let elf_magic = [0x7f, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00];
+        let binary = create_executable(&temp, "binary", &elf_magic);
+
+        // Create chain: link1 -> link2 -> binary
+        let link2 = temp.child("link2");
+        link2.symlink_to_file(&binary).unwrap();
+
+        let link1 = temp.child("link1");
+        link1.symlink_to_file(link2.path()).unwrap();
+
+        let chain = resolve(link1.path()).unwrap();
+
+        // Should have: link2 (symlink), binary (terminal)
+        // link1 is followed to link2, then link2 is shown, then followed to binary
+        assert_eq!(chain.links.len(), 2);
+        assert!(matches!(chain.links[0].link_type, LinkType::Symlink));
+        assert!(matches!(
+            chain.links[1].link_type,
+            LinkType::Terminal(FileKind::Binary)
+        ));
+        assert!(chain.links[1].is_final);
+
+        // Check that we have the right target paths
+        // links[0] is the symlink link2 (target of link1)
+        assert_eq!(chain.links[0].target, link2.path());
+        // links[1] is the binary (target of link2)
+        assert_eq!(chain.links[1].target, binary);
     }
 }

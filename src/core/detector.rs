@@ -19,7 +19,7 @@ const UNWRAPPED_SUFFIX: &str = "-unwrapped";
 static NIX_STORE_PATH_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"/nix/store/[a-z0-9]+-[^/\s]+(?:/[^/\s]+)*").unwrap());
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileType {
     Symlink,
     ShellScript,
