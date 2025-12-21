@@ -1,11 +1,19 @@
 # symseek
 
-A simple utility to trace symlinks recursively.
+A simple utility to trace links recursively.
 
 ## Usage
 
 ```shell
-symseek <name>
+symseek [OPTIONS] <TARGET>
 ```
 
-`name` can either be relative/absolute path to a file/directory, or a binary name in PATH.
+- `TARGET`: target file or directory. If only a filename is specified, will also search in `PATH`.
+
+## Detection
+
+Current the following types of links are handled:
+
+- symlinks
+- nixpkgs wrappers
+  - Heuristics: check if the file contains a nix store path with the same app name
