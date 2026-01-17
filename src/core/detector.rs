@@ -217,12 +217,12 @@ impl WrapperDetector for NixStorePathDetector {
                 trace!("NixStorePathDetector: found path in content: {candidate_str}");
 
                 let names_match = programs_match(path, candidate_path);
-                let exists = candidate_path.exists();
+                let is_file = candidate_path.is_file();
                 let not_same = candidate_path != path;
 
-                trace!("  names_match={names_match}, exists={exists}, not_same={not_same}");
+                trace!("  names_match={names_match}, is_file={is_file}, not_same={not_same}");
 
-                if names_match && exists && not_same {
+                if names_match && is_file && not_same {
                     debug!("NixStorePathDetector: found matching path: {candidate_str}");
                     return Ok(Some(candidate_str.to_string()));
                 }
