@@ -1,4 +1,6 @@
-use crate::core::detector::{self, FileType, NixStorePathDetector, WrapperDetector};
+use crate::core::detector::nix_binary_wrapper::NixBinaryWrapperDetector;
+use crate::core::detector::nix_program_name::NixProgramNameDetector;
+use crate::core::detector::{self, FileType, WrapperDetector};
 use crate::core::types::{FileKind, LinkType, ScriptType, SymlinkChain, WrapperKind};
 use crate::error::{Result, SymseekError};
 use log::{debug, trace};
@@ -35,106 +37,33 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
         iteration += 1;
         trace!("Iteration {iteration}: processing {}", current.display());
 
-        // Cycle detection
         if visited.contains(&current) {
             debug!("Cycle detected at: {}", current.display());
             return Err(SymseekError::CycleDetected { path: current });
         }
         visited.insert(current.clone());
 
-        // Try symlink first
-        let is_symlink = match current.read_link() {
-            Ok(target) => {
-                debug!(
-                    "Found symlink: {} -> {}",
-                    current.display(),
-                    target.display()
-                );
-                let resolved = resolve_target(&current, &target);
-                current.clone_from(&resolved);
-                true
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
-                // Not a symlink - continue to wrapper detection
-                trace!("Not a symlink: {}", current.display());
-                false
-            }
-            Err(e) => {
-                debug!("Error reading symlink {}: {}", current.display(), e);
-                return Err(SymseekError::SymlinkResolution {
-                    path: current.clone(),
-                    reason: e.to_string(),
-                });
-            }
-        };
+        let is_symlink = process_symlink(&mut current)?;
 
-        // Detect file type and extract wrapper
-        trace!("Detecting file type for: {}", current.display());
         let file_type = detector::detect_file_type(&current)?;
         debug!("File type detected: {file_type:?}");
 
-        // Use NixStorePathDetector for shell scripts and binaries
-        let wrapper_result = match file_type {
-            FileType::ShellScript => {
-                let detector = NixStorePathDetector;
-                detector.detect(&current)?.map(|target| {
-                    (
-                        target,
-                        LinkType::Wrapper(WrapperKind::Text(ScriptType::Shell)),
-                    )
-                })
-            }
-            FileType::ElfBinary => {
-                let detector = NixStorePathDetector;
-                detector
-                    .detect(&current)?
-                    .map(|target| (target, LinkType::Wrapper(WrapperKind::Binary)))
-            }
-            // Python, Perl, and other script types: future work
-            // For now, treat them as terminal nodes
-            _ => None,
-        };
-
-        if let Some((target, link_type)) = wrapper_result {
-            // Found a wrapper, add current path with wrapper type
+        if let Some((target, link_type)) = detect_wrapper(&current, &file_type)? {
             debug!("Found wrapper, following to: {target}");
             chain.add_link(current.clone(), false, link_type);
-            // Add the wrapper target and continue
             current = PathBuf::from(target);
             continue;
         }
 
-        // No wrapper found - add the current path with appropriate type based on file type
         if is_symlink {
-            // We followed a symlink, add the target with the correct type
-            let link_type = match file_type {
-                FileType::Symlink => LinkType::Symlink,
-                FileType::ElfBinary => LinkType::Terminal(FileKind::Binary),
-                _ => LinkType::Terminal(FileKind::Text),
-            };
-
-            // Mark as final only if it's a terminal node
-            let is_final = file_type != FileType::Symlink;
-            chain.add_link(current.clone(), is_final, link_type);
-
-            // If the target is a symlink, continue following it
+            add_symlink_to_chain(&mut chain, &current, &file_type);
             if file_type == FileType::Symlink {
                 continue;
             }
-            break; // Reached a terminal node
+            break;
         }
 
-        // Terminal node - determine what type of file it is
-        trace!("Reached terminal node: {}", current.display());
-        let file_type = detector::detect_file_type(&current)?;
-
-        // Convert file type to the appropriate link type for the terminal node
-        let terminal_link_type = match file_type {
-            FileType::ElfBinary | FileType::OtherBinary => LinkType::Terminal(FileKind::Binary),
-            _ => LinkType::Terminal(FileKind::Text), // Symlinks, scripts, and other files are "text" from user perspective
-        };
-
-        chain.add_link(current.clone(), true, terminal_link_type);
+        add_terminal_node(&mut chain, &current, &file_type);
         break;
     }
 
@@ -145,11 +74,86 @@ pub fn resolve(path: &Path) -> Result<SymlinkChain> {
     Ok(chain)
 }
 
+fn process_symlink(current: &mut PathBuf) -> Result<bool> {
+    match current.read_link() {
+        Ok(target) => {
+            debug!(
+                "Found symlink: {} -> {}",
+                current.display(),
+                target.display()
+            );
+            let resolved = resolve_target(current, &target);
+            current.clone_from(&resolved);
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+            trace!("Not a symlink: {}", current.display());
+            Ok(false)
+        }
+        Err(e) => {
+            debug!("Error reading symlink {}: {}", current.display(), e);
+            Err(SymseekError::SymlinkResolution {
+                path: current.clone(),
+                reason: e.to_string(),
+            })
+        }
+    }
+}
+
+fn detect_wrapper(current: &Path, file_type: &FileType) -> Result<Option<(String, LinkType)>> {
+    match file_type {
+        FileType::ShellScript => {
+            if let Some(target) = NixBinaryWrapperDetector.detect(current)? {
+                return Ok(Some((
+                    target,
+                    LinkType::Wrapper(WrapperKind::Text(ScriptType::Shell)),
+                )));
+            }
+            Ok(NixProgramNameDetector.detect(current)?.map(|target| {
+                (
+                    target,
+                    LinkType::Wrapper(WrapperKind::Text(ScriptType::Shell)),
+                )
+            }))
+        }
+        FileType::ElfBinary => {
+            if let Some(target) = NixBinaryWrapperDetector.detect(current)? {
+                return Ok(Some((target, LinkType::Wrapper(WrapperKind::Binary))));
+            }
+            Ok(NixProgramNameDetector
+                .detect(current)?
+                .map(|target| (target, LinkType::Wrapper(WrapperKind::Binary))))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn add_symlink_to_chain(chain: &mut SymlinkChain, path: &Path, file_type: &FileType) {
+    let link_type = match file_type {
+        FileType::Symlink => LinkType::Symlink,
+        FileType::ElfBinary => LinkType::Terminal(FileKind::Binary),
+        _ => LinkType::Terminal(FileKind::Text),
+    };
+    let is_final = *file_type != FileType::Symlink;
+    chain.add_link(path.to_path_buf(), is_final, link_type);
+}
+
+fn add_terminal_node(chain: &mut SymlinkChain, path: &Path, file_type: &FileType) {
+    trace!("Reached terminal node: {}", path.display());
+    let terminal_link_type = match file_type {
+        FileType::ElfBinary | FileType::OtherBinary => LinkType::Terminal(FileKind::Binary),
+        _ => LinkType::Terminal(FileKind::Text),
+    };
+    chain.add_link(path.to_path_buf(), true, terminal_link_type);
+}
+
 fn resolve_target(current: &Path, target: &Path) -> PathBuf {
     if target.is_absolute() {
         target.to_path_buf()
     } else {
-        let parent = current.parent().unwrap_or_else(|| Path::new("/"));
+        let parent = current
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("/"));
         path_clean::clean(parent.join(target))
     }
 }
@@ -172,7 +176,7 @@ mod tests {
 
     #[test]
     fn test_resolve_requires_absolute_path() {
-        let relative = Path::new("relative/path");
+        let relative = std::path::Path::new("relative/path");
         let result = resolve(relative);
 
         assert!(result.is_err());
@@ -194,10 +198,8 @@ mod tests {
 
         let chain = resolve(link.path()).unwrap();
 
-        // Single symlink pointing to target should produce one link (the terminal)
         assert_eq!(chain.links.len(), 1);
         assert!(chain.links[0].is_final);
-        // Target is a text file, so it should be Terminal(Text)
         assert!(matches!(
             chain.links[0].link_type,
             LinkType::Terminal(FileKind::Text)
@@ -208,7 +210,6 @@ mod tests {
     fn test_resolve_symlink_chain() {
         let temp = TempDir::new().unwrap();
 
-        // Create chain: link1 -> link2 -> link3 -> target
         let target = create_executable(&temp, "target", b"#!/bin/bash\necho hello\n");
 
         let link3 = temp.child("link3");
@@ -222,7 +223,6 @@ mod tests {
 
         let chain = resolve(link1.path()).unwrap();
 
-        // Symlink chain produces: link2 (symlink), link3 (symlink), target (terminal)
         assert_eq!(chain.links.len(), 3);
         assert!(matches!(chain.links[0].link_type, LinkType::Symlink));
         assert!(matches!(chain.links[1].link_type, LinkType::Symlink));
@@ -238,15 +238,12 @@ mod tests {
 
         let _target = create_executable(&temp, "target", b"#!/bin/bash\n");
 
-        // Create symlink with relative path
         let link = subdir.child("link");
         std::os::unix::fs::symlink("../target", link.path()).unwrap();
 
         let chain = resolve(link.path()).unwrap();
 
-        // Resolving a relative symlink produces one link (the terminal)
         assert_eq!(chain.links.len(), 1);
-        // Verify the target was resolved correctly
         let resolved_target = &chain.links[0].target;
         assert!(resolved_target.ends_with("target"));
         assert!(resolved_target.is_absolute());
@@ -259,7 +256,6 @@ mod tests {
         let link1 = temp.child("link1");
         let link2 = temp.child("link2");
 
-        // Create cycle: link1 -> link2 -> link1
         std::os::unix::fs::symlink(link2.path(), link1.path()).unwrap();
         std::os::unix::fs::symlink(link1.path(), link2.path()).unwrap();
 
@@ -301,7 +297,6 @@ mod tests {
         assert_eq!(chain.links.len(), 1);
         let last_link = &chain.links[chain.links.len() - 1];
         assert!(last_link.is_final);
-        // Terminal node should be Text (not Binary)
         assert!(matches!(
             last_link.link_type,
             LinkType::Terminal(FileKind::Text)
@@ -310,29 +305,28 @@ mod tests {
 
     #[test]
     fn test_resolve_target_absolute() {
-        let current = Path::new("/usr/bin/link");
-        let target = Path::new("/usr/local/bin/target");
+        let current = PathBuf::from("/usr/bin/link");
+        let target = PathBuf::from("/usr/local/bin/target");
 
-        let resolved = resolve_target(current, target);
+        let resolved = resolve_target(&current, &target);
         assert_eq!(resolved, PathBuf::from("/usr/local/bin/target"));
     }
 
     #[test]
     fn test_resolve_target_relative() {
-        let current = Path::new("/usr/bin/link");
-        let target = Path::new("../lib/target");
+        let current = PathBuf::from("/usr/bin/link");
+        let target = PathBuf::from("../lib/target");
 
-        let resolved = resolve_target(current, target);
-        // Should resolve to /usr/lib/target
+        let resolved = resolve_target(&current, &target);
         assert_eq!(resolved, PathBuf::from("/usr/lib/target"));
     }
 
     #[test]
     fn test_resolve_target_with_dots() {
-        let current = Path::new("/usr/bin/link");
-        let target = Path::new("./target");
+        let current = PathBuf::from("/usr/bin/link");
+        let target = PathBuf::from("./target");
 
-        let resolved = resolve_target(current, target);
+        let resolved = resolve_target(&current, &target);
         assert_eq!(resolved, PathBuf::from("/usr/bin/target"));
     }
 
@@ -340,11 +334,9 @@ mod tests {
     fn test_resolve_symlink_to_symlink_to_binary() {
         let temp = TempDir::new().unwrap();
 
-        // Create binary file
         let elf_magic = [0x7f, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00];
         let binary = create_executable(&temp, "binary", &elf_magic);
 
-        // Create chain: link1 -> link2 -> binary
         let link2 = temp.child("link2");
         link2.symlink_to_file(&binary).unwrap();
 
@@ -353,8 +345,6 @@ mod tests {
 
         let chain = resolve(link1.path()).unwrap();
 
-        // Should have: link2 (symlink), binary (terminal)
-        // link1 is followed to link2, then link2 is shown, then followed to binary
         assert_eq!(chain.links.len(), 2);
         assert!(matches!(chain.links[0].link_type, LinkType::Symlink));
         assert!(matches!(
@@ -363,10 +353,7 @@ mod tests {
         ));
         assert!(chain.links[1].is_final);
 
-        // Check that we have the right target paths
-        // links[0] is the symlink link2 (target of link1)
         assert_eq!(chain.links[0].target, link2.path());
-        // links[1] is the binary (target of link2)
         assert_eq!(chain.links[1].target, binary);
     }
 }

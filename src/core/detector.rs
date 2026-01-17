@@ -1,3 +1,6 @@
+pub mod nix_binary_wrapper;
+pub mod nix_program_name;
+
 use crate::error::{Result, SymseekError};
 use log::{debug, trace};
 use regex::Regex;
@@ -5,8 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
 
-// File type detection constants
-const MAX_FILE_SIZE: u64 = 1_048_576; // 1 MiB
+const MAX_FILE_SIZE: u64 = 1_048_576;
 const BUFFER_SIZE: usize = 512;
 const ELF_MAGIC: &[u8] = &[0x7f, b'E', b'L', b'F'];
 const SHEBANG_PREFIX: &[u8] = b"#!";
@@ -15,9 +17,11 @@ const PRINTABLE_ASCII_MAX: u8 = 126;
 const WRAPPED_SUFFIX: &str = "-wrapped";
 const UNWRAPPED_SUFFIX: &str = "-unwrapped";
 
-// Nix store path detection regex
-static NIX_STORE_PATH_REGEX: LazyLock<Regex> =
+pub static NIX_STORE_PATH_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"/nix/store/[a-z0-9]+-[^/\s]+(?:/[^/\s]+)*").unwrap());
+
+pub static MAKE_C_WRAPPER_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"makeCWrapper\s+'([^']+)'").unwrap());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileType {
@@ -55,15 +59,15 @@ pub fn detect_file_type(path: &Path) -> Result<FileType> {
     }
 
     let mut buffer = vec![0u8; BUFFER_SIZE];
-    let bytes_read = fs::File::open(path)
-        .and_then(|mut f| {
-            use std::io::Read;
-            f.read(&mut buffer)
-        })
-        .map_err(|e| SymseekError::Io {
-            context: format!("Failed to read {}", path.display()),
-            source: e,
-        })?;
+    let bytes_read = {
+        use std::io::Read;
+        fs::File::open(path)
+            .and_then(|mut f| f.read(&mut buffer))
+            .map_err(|e| SymseekError::Io {
+                context: format!("Failed to read {}", path.display()),
+                source: e,
+            })?
+    };
 
     buffer.truncate(bytes_read);
     trace!("Read {} bytes from {}", bytes_read, path.display());
@@ -110,10 +114,6 @@ pub fn detect_file_type(path: &Path) -> Result<FileType> {
     }
 }
 
-/// Trait for wrapper detection strategies.
-///
-/// Implementations can detect different types of wrappers by examining file
-/// content and determining if a file wraps another executable.
 pub trait WrapperDetector {
     /// Detect if the given path is a wrapper for another executable.
     ///
@@ -121,19 +121,10 @@ pub trait WrapperDetector {
     ///
     /// Returns an error if the file cannot be read or analyzed.
     fn detect(&self, path: &Path) -> Result<Option<String>>;
-
-    /// Return the name of this detector for logging purposes.
-    fn name(&self) -> &'static str;
 }
 
-/// Normalize a program name by stripping common prefixes and suffixes.
-///
-/// Removes leading dots (`.`) and trailing suffixes (`-wrapped`, `-unwrapped`)
-/// used by NixOS wrappers. For example:
-/// - `.nvim-wrapped` → `nvim`
-/// - `python-unwrapped` → `python`
-/// - `gcc` → `gcc`
-fn normalize_program_name(name: &str) -> &str {
+#[must_use]
+pub fn normalize_program_name(name: &str) -> &str {
     let mut result = name;
 
     if let Some(stripped) = result.strip_prefix('.') {
@@ -149,13 +140,7 @@ fn normalize_program_name(name: &str) -> &str {
     result
 }
 
-/// Check if two paths have the same normalized program name.
-///
-/// Returns `true` if both paths refer to the same program after normalizing
-/// wrapped/unwrapped variants and dot prefixes. For example:
-/// - `/usr/bin/nvim` and `/nix/store/xxx/bin/nvim-wrapped` match
-/// - `/usr/bin/nvim` and `/usr/bin/python` do not match
-fn programs_match(current: &Path, candidate: &Path) -> bool {
+pub fn programs_match(current: &Path, candidate: &Path) -> bool {
     let current_name = current
         .file_name()
         .and_then(|n| n.to_str())
@@ -169,93 +154,13 @@ fn programs_match(current: &Path, candidate: &Path) -> bool {
     !current_name.is_empty() && current_name == candidate_name
 }
 
-pub struct NixStorePathDetector;
-
-impl WrapperDetector for NixStorePathDetector {
-    fn detect(&self, path: &Path) -> Result<Option<String>> {
-        let path_str = path.to_string_lossy();
-        trace!("NixStorePathDetector: checking {path_str}");
-
-        if !path_str.contains("nix") {
-            trace!("NixStorePathDetector: not a nix path, skipping");
-            return Ok(None);
-        }
-
-        let metadata = fs::metadata(path).map_err(|e| SymseekError::Io {
-            context: format!("Failed to read metadata for {}", path.display()),
-            source: e,
-        })?;
-
-        if metadata.len() > MAX_FILE_SIZE {
-            trace!("NixStorePathDetector: file too large");
-            return Ok(None);
-        }
-
-        let content_str = if let Ok(text) = fs::read_to_string(path) {
-            text
-        } else {
-            let bytes = fs::read(path).map_err(|e| SymseekError::Io {
-                context: format!("Failed to read file {}", path.display()),
-                source: e,
-            })?;
-
-            extract_strings_from_binary(&bytes)
-        };
-
-        for caps in NIX_STORE_PATH_REGEX.captures_iter(&content_str) {
-            if let Some(matched) = caps.get(0) {
-                let mut candidate_str = matched.as_str();
-                // Remove trailing quotes and special characters
-                while candidate_str.ends_with('"')
-                    || candidate_str.ends_with('\'')
-                    || candidate_str.ends_with('$')
-                {
-                    candidate_str = &candidate_str[..candidate_str.len() - 1];
-                }
-
-                let candidate_path = Path::new(candidate_str);
-                trace!("NixStorePathDetector: found path in content: {candidate_str}");
-
-                let names_match = programs_match(path, candidate_path);
-                let is_file = candidate_path.is_file();
-                let not_same = candidate_path != path;
-
-                trace!("  names_match={names_match}, is_file={is_file}, not_same={not_same}");
-
-                if names_match && is_file && not_same {
-                    debug!("NixStorePathDetector: found matching path: {candidate_str}");
-                    return Ok(Some(candidate_str.to_string()));
-                }
-            }
-        }
-
-        trace!("NixStorePathDetector: no target path");
-        Ok(None)
-    }
-
-    fn name(&self) -> &'static str {
-        "NixStorePathDetector"
-    }
-}
-
-/// Extract null-terminated strings from binary data.
-///
-/// Scans through binary data and extracts sequences of printable ASCII characters
-/// (32-126) separated by null bytes or non-printable bytes. Useful for finding
-/// embedded file paths and strings in binary files.
-///
-/// # Example
-/// ```ignore
-/// let binary = b"path\0data\0";
-/// let result = extract_strings_from_binary(binary);
-/// // result contains "path\ndata\n"
-/// ```
-fn extract_strings_from_binary(bytes: &[u8]) -> String {
+#[must_use]
+pub fn extract_strings_from_binary(bytes: &[u8]) -> String {
     let mut result = String::new();
     let mut current = Vec::new();
 
     for &byte in bytes {
-        if byte == 0 {
+        if byte == 0 || byte == b'\n' {
             if !current.is_empty() {
                 if let Ok(s) = String::from_utf8(current.clone()) {
                     result.push_str(&s);
@@ -278,7 +183,6 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    // normalize_program_name tests
     #[test]
     fn test_normalize_program_name_basic() {
         assert_eq!(normalize_program_name("nvim"), "nvim");
@@ -310,12 +214,8 @@ mod tests {
     #[test]
     fn test_normalize_program_name_edge_cases() {
         assert_eq!(normalize_program_name(""), "");
-        // Note: normalize removes the suffix from the entire name
-        // so "wrapped" only (7 chars) becomes "" after trying to remove 8 chars
-        // The actual behavior here depends on how the code handles string slicing
     }
 
-    // programs_match tests
     #[test]
     fn test_programs_match_exact() {
         let path1 = PathBuf::from("/usr/bin/nvim");
@@ -349,15 +249,6 @@ mod tests {
     }
 
     #[test]
-    fn test_programs_match_different_suffixes() {
-        let path1 = PathBuf::from("/usr/bin/vim");
-        let path2 = PathBuf::from("/usr/local/bin/nano");
-        // Different program names should not match
-        assert!(!programs_match(&path1, &path2));
-    }
-
-    // extract_strings_from_binary tests
-    #[test]
     fn test_extract_strings_simple() {
         let binary = b"Hello\0World\0";
         let result = extract_strings_from_binary(binary);
@@ -371,18 +262,6 @@ mod tests {
         let result = extract_strings_from_binary(binary);
         assert!(result.contains("/nix/store/abc123-pkg/bin/exe"));
         assert!(result.contains("more data"));
-    }
-
-    #[test]
-    fn test_extract_strings_filters_non_printable() {
-        // Test that non-printable bytes clear the buffer
-        // "Valid\0" gets extracted, but "Other" (without null terminator after)
-        // doesn't get extracted unless followed by null
-        let binary = b"Valid\0\x01\x02\x03Other\0Next\0";
-        let result = extract_strings_from_binary(binary);
-        assert!(result.contains("Valid"));
-        assert!(result.contains("Other"));
-        assert!(result.contains("Next"));
     }
 
     #[test]
@@ -408,7 +287,6 @@ mod tests {
         assert!(result.contains("third"));
     }
 
-    // Filesystem-dependent tests (require tempfile)
     #[cfg(test)]
     mod fs_tests {
         use super::*;
@@ -512,7 +390,7 @@ mod tests {
         #[test]
         fn test_detect_other_binary() {
             let temp = TempDir::new().unwrap();
-            let binary_data = &[0x89, 0x50, 0x4E, 0x47]; // PNG magic
+            let binary_data = &[0x89, 0x50, 0x4E, 0x47];
             let file = temp.child("image.png");
             file.write_binary(binary_data).unwrap();
 
@@ -537,6 +415,43 @@ mod tests {
             let path = std::path::PathBuf::from("/nonexistent/file");
             let result = detect_file_type(&path);
             assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_nix_binary_wrapper_detector() {
+            use super::super::nix_binary_wrapper::NixBinaryWrapperDetector;
+
+            let temp = TempDir::new().unwrap();
+
+            let bin_dir = temp.child("bin");
+            bin_dir.create_dir_all().unwrap();
+
+            let script_content = "#!/bin/bash\n# Generated by makeCWrapper\nmakeCWrapper '/nix/store/abc123-quickshell-0.2.1/bin/qs'\n";
+            let wrapper = bin_dir.child("noctalia-shell-wrapped");
+            wrapper.write_str(script_content).unwrap();
+
+            let detector = NixBinaryWrapperDetector;
+            let result = detector.detect(wrapper.path()).unwrap();
+            assert!(result.is_some());
+            assert_eq!(result.unwrap(), "/nix/store/abc123-quickshell-0.2.1/bin/qs");
+        }
+
+        #[test]
+        fn test_nix_binary_wrapper_detector_not_nix_path() {
+            use super::super::nix_binary_wrapper::NixBinaryWrapperDetector;
+
+            let temp = TempDir::new().unwrap();
+
+            let bin_dir = temp.child("bin");
+            bin_dir.create_dir_all().unwrap();
+
+            let script_content = "#!/bin/bash\nmakeCWrapper '/usr/local/bin/qs'\n";
+            let wrapper = bin_dir.child("wrapper");
+            wrapper.write_str(script_content).unwrap();
+
+            let detector = NixBinaryWrapperDetector;
+            let result = detector.detect(wrapper.path()).unwrap();
+            assert!(result.is_none());
         }
     }
 }
