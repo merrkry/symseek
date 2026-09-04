@@ -2,18 +2,18 @@ pub mod nix_binary_wrapper;
 pub mod nix_program_name;
 
 use crate::error::{Result, SymseekError};
-use log::{debug, trace};
+use content_inspector::inspect;
 use regex::Regex;
+use regex::bytes::Regex as BytesRegex;
 use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
+use tracing::{debug, trace};
 
 const MAX_FILE_SIZE: u64 = 1_048_576;
 const BUFFER_SIZE: usize = 512;
 const ELF_MAGIC: &[u8] = &[0x7f, b'E', b'L', b'F'];
 const SHEBANG_PREFIX: &[u8] = b"#!";
-const PRINTABLE_ASCII_MIN: u8 = 32;
-const PRINTABLE_ASCII_MAX: u8 = 126;
 const WRAPPED_SUFFIX: &str = "-wrapped";
 const UNWRAPPED_SUFFIX: &str = "-unwrapped";
 
@@ -22,6 +22,9 @@ pub static NIX_STORE_PATH_REGEX: LazyLock<Regex> =
 
 pub static MAKE_C_WRAPPER_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"makeCWrapper\s+'([^']+)'").unwrap());
+
+static PRINTABLE_ASCII_REGEX: LazyLock<BytesRegex> =
+    LazyLock::new(|| BytesRegex::new(r"[\x20-\x7e]+").unwrap());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileType {
@@ -105,7 +108,7 @@ pub fn detect_file_type(path: &Path) -> Result<FileType> {
         }
     }
 
-    if std::str::from_utf8(&buffer).is_ok() {
+    if inspect(&buffer).is_text() {
         trace!("Detected as other text: {}", path.display());
         Ok(FileType::OtherText)
     } else {
@@ -156,26 +159,11 @@ pub fn programs_match(current: &Path, candidate: &Path) -> bool {
 
 #[must_use]
 pub fn extract_strings_from_binary(bytes: &[u8]) -> String {
-    let mut result = String::new();
-    let mut current = Vec::new();
-
-    for &byte in bytes {
-        if byte == 0 || byte == b'\n' {
-            if !current.is_empty() {
-                if let Ok(s) = String::from_utf8(current.clone()) {
-                    result.push_str(&s);
-                    result.push('\n');
-                }
-                current.clear();
-            }
-        } else if (PRINTABLE_ASCII_MIN..=PRINTABLE_ASCII_MAX).contains(&byte) {
-            current.push(byte);
-        } else {
-            current.clear();
-        }
-    }
-
-    result
+    PRINTABLE_ASCII_REGEX
+        .find_iter(bytes)
+        .map(|matched| std::str::from_utf8(matched.as_bytes()).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]

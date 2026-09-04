@@ -3,9 +3,9 @@ use crate::core::detector::nix_program_name::NixProgramNameDetector;
 use crate::core::detector::{self, FileType, WrapperDetector};
 use crate::core::types::{FileKind, LinkType, ScriptType, SymlinkChain, WrapperKind};
 use crate::error::{Result, SymseekError};
-use log::{debug, trace};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use tracing::{debug, trace};
 
 /// Resolve a path by following symlinks and detecting wrappers.
 ///

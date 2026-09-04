@@ -1,7 +1,7 @@
 use crate::core::types::FileLocation;
 use crate::error::{Result, SymseekError};
-use log::{debug, trace};
 use std::{env, path};
+use tracing::{debug, trace};
 
 /// Find a file by name in the current directory or PATH.
 ///
@@ -75,39 +75,29 @@ fn search_in_cwd(name: &str) -> Result<Option<path::PathBuf>> {
 }
 
 fn search_in_path(name: &str) -> Result<Vec<path::PathBuf>> {
-    let paths = env::var("PATH").map_err(|_| SymseekError::InvalidInput {
+    let paths = env::var_os("PATH").ok_or_else(|| SymseekError::InvalidInput {
         message: "PATH environment variable not found".to_string(),
     })?;
 
+    search_in_paths(name, &paths)
+}
+
+fn search_in_paths(name: &str, paths: &std::ffi::OsStr) -> Result<Vec<path::PathBuf>> {
     debug!("Searching PATH for: {name}");
-    let mut found_paths = Vec::new();
-
-    for path in env::split_paths(&paths) {
-        let full_path = path.join(name);
-        trace!("Checking PATH entry: {}", full_path.display());
-
-        match full_path.try_exists() {
-            Ok(true) => {
-                trace!("Found in PATH: {}", full_path.display());
-                found_paths.push(full_path);
-            }
-            Ok(false) => {}
-            Err(e) => {
-                return Err(SymseekError::Io {
-                    context: format!("Failed to check if {} exists", full_path.display()),
-                    source: e,
-                });
-            }
-        }
+    match which::which_in_global(name, Some(paths)) {
+        Ok(paths) => Ok(paths
+            .inspect(|path| trace!("Found in PATH: {}", path.display()))
+            .collect()),
+        Err(which::Error::CannotFindBinaryPath) => Ok(Vec::new()),
+        Err(error) => Err(SymseekError::InvalidInput {
+            message: format!("Failed to search PATH: {error}"),
+        }),
     }
-
-    Ok(found_paths)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::FileLocation;
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use std::os::unix::fs::PermissionsExt;
@@ -133,30 +123,11 @@ mod tests {
         let myexe = bin2.child("myexe");
         create_executable(&myexe.to_path_buf());
 
-        // Set PATH
-        let path_value = format!("{}:{}", bin1.path().display(), bin2.path().display());
-        let original_path = env::var("PATH").ok();
-        unsafe {
-            env::set_var("PATH", &path_value);
-        }
+        let path_value = env::join_paths([bin1.path(), bin2.path()]).unwrap();
+        let paths = search_in_paths("myexe", &path_value).unwrap();
 
-        let result = find_file("myexe");
-
-        // Restore PATH
-        if let Some(original) = original_path {
-            unsafe {
-                env::set_var("PATH", original);
-            }
-        }
-
-        assert!(result.is_ok());
-        match result.unwrap() {
-            FileLocation::PathEnvironment(paths) => {
-                assert_eq!(paths.len(), 1);
-                assert!(paths[0].ends_with("bin2/myexe"));
-            }
-            FileLocation::CurrentDirectory(_) => panic!("Expected PathEnvironment"),
-        }
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].ends_with("bin2/myexe"));
     }
 
     #[test]
@@ -174,27 +145,10 @@ mod tests {
         create_executable(&cmd1.to_path_buf());
         create_executable(&cmd2.to_path_buf());
 
-        let path_value = format!("{}:{}", bin1.path().display(), bin2.path().display());
-        let original_path = env::var("PATH").ok();
-        unsafe {
-            env::set_var("PATH", &path_value);
-        }
+        let path_value = env::join_paths([bin1.path(), bin2.path()]).unwrap();
+        let paths = search_in_paths("cmd", &path_value).unwrap();
 
-        let result = find_file("cmd");
-
-        if let Some(original) = original_path {
-            unsafe {
-                env::set_var("PATH", original);
-            }
-        }
-
-        assert!(result.is_ok());
-        match result.unwrap() {
-            FileLocation::PathEnvironment(paths) => {
-                assert_eq!(paths.len(), 2);
-            }
-            FileLocation::CurrentDirectory(_) => panic!("Expected PathEnvironment"),
-        }
+        assert_eq!(paths.len(), 2);
     }
 
     #[test]
@@ -203,20 +157,9 @@ mod tests {
         let bin = temp.child("bin");
         bin.create_dir_all().unwrap();
 
-        let original_path = env::var("PATH").ok();
-        unsafe {
-            env::set_var("PATH", bin.path().to_str().unwrap());
-        }
+        let paths = search_in_paths("nonexistent", bin.path().as_os_str()).unwrap();
 
-        let result = find_file("nonexistent");
-
-        if let Some(original) = original_path {
-            unsafe {
-                env::set_var("PATH", original);
-            }
-        }
-
-        assert!(result.is_err());
+        assert!(paths.is_empty());
     }
 
     #[test]
@@ -228,26 +171,20 @@ mod tests {
         let testcmd = bin.child("testcmd");
         create_executable(&testcmd.to_path_buf());
 
-        let original_path = env::var("PATH").ok();
-        unsafe {
-            env::set_var("PATH", bin.path().to_str().unwrap());
-        }
+        let paths = search_in_paths("testcmd", bin.path().as_os_str()).unwrap();
 
-        let result = find_file("testcmd");
+        assert_eq!(paths, [testcmd.to_path_buf()]);
+    }
 
-        if let Some(original) = original_path {
-            unsafe {
-                env::set_var("PATH", original);
-            }
-        }
+    #[test]
+    fn test_search_in_path_ignores_non_executable_files() {
+        let temp = TempDir::new().unwrap();
+        let bin = temp.child("bin");
+        bin.create_dir_all().unwrap();
+        bin.child("not-executable").touch().unwrap();
 
-        assert!(result.is_ok());
-        match result.unwrap() {
-            FileLocation::PathEnvironment(paths) => {
-                assert!(!paths.is_empty());
-                assert!(paths[0].ends_with("testcmd"));
-            }
-            FileLocation::CurrentDirectory(_) => panic!("Expected PathEnvironment for binary name"),
-        }
+        let paths = search_in_paths("not-executable", bin.path().as_os_str()).unwrap();
+
+        assert!(paths.is_empty());
     }
 }

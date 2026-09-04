@@ -3,7 +3,7 @@ pub mod args;
 use crate::core::{resolver, search, types::FileLocation};
 use crate::error::Result;
 use crate::output::{OutputFormat, formatter, json};
-use log::debug;
+use tracing::debug;
 
 /// Main CLI application struct.
 ///

@@ -2,9 +2,9 @@ use crate::core::detector::{
     NIX_STORE_PATH_REGEX, WrapperDetector, extract_strings_from_binary, programs_match,
 };
 use crate::error::{Result, SymseekError};
-use log::{debug, trace};
 use std::fs;
 use std::path::Path;
+use tracing::{debug, trace};
 
 const DETECTOR_NAME: &str = "NixProgramNameDetector";
 

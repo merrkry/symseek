@@ -1,10 +1,10 @@
 use crate::core::detector::{MAX_FILE_SIZE, WrapperDetector, extract_strings_from_binary};
 use crate::error::{Result, SymseekError};
-use log::debug;
 use regex::Regex;
 use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
+use tracing::debug;
 
 const DETECTOR_NAME: &str = "NixBinaryWrapperDetector";
 

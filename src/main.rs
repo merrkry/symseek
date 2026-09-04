@@ -1,4 +1,6 @@
 use symseek::cli::{Cli, args};
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::EnvFilter;
 
 fn main() {
     // Parse args early to check verbose flag before logger init
@@ -17,23 +19,20 @@ fn main() {
 }
 
 fn init_logger(verbose: bool) {
-    let mut builder = env_logger::Builder::new();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_writer(std::io::stderr);
 
-    // RUST_LOG env var takes precedence, then --verbose flag, then silent by default
-    match std::env::var("RUST_LOG") {
-        Ok(rust_log) => {
-            // Use RUST_LOG value
-            builder.parse_filters(&rust_log);
-        }
-        Err(_) => {
-            // RUST_LOG not set, use --verbose flag or default to silent
-            if verbose {
-                builder.filter_level(log::LevelFilter::Debug);
-            } else {
-                builder.filter_level(log::LevelFilter::Off);
-            }
-        }
+    if std::env::var_os(EnvFilter::DEFAULT_ENV).is_some() {
+        subscriber
+            .with_env_filter(EnvFilter::from_default_env())
+            .init();
+    } else {
+        let level = if verbose {
+            LevelFilter::DEBUG
+        } else {
+            LevelFilter::OFF
+        };
+        subscriber.with_max_level(level).init();
     }
-
-    builder.format_timestamp(None).try_init().ok();
 }
